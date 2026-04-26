@@ -101,4 +101,52 @@ pub enum DataKey {
     LargestContribution,
     /// Whitelist of accepted token addresses
     AcceptedTokens,
+    /// Contribution message for a specific address
+    ContributionMessage(Address),
+    /// Recurring contribution plan for a specific address
+    RecurringPlan(Address),
+    /// Recurring contribution history for a specific address
+    RecurringHistory(Address),
+    /// Extension proposal data
+    ExtensionProposal,
+    /// Extension votes for a specific address
+    ExtensionVote(Address),
+    /// Partial refund amount for a specific address
+    PartialRefund(Address),
+}
+
+/// Recurring contribution plan.
+///
+/// Defines a scheduled recurring contribution.
+#[derive(Clone)]
+#[contracttype]
+pub struct RecurringPlan {
+    /// Amount to contribute each interval in stroops
+    pub amount: i128,
+    /// Interval in seconds between contributions
+    pub interval: u64,
+    /// End date for recurring contributions (Unix timestamp)
+    pub end_date: u64,
+    /// Timestamp of last execution
+    pub last_executed: u64,
+}
+
+/// Extension proposal for deadline voting.
+///
+/// Tracks a proposed deadline extension and voting results.
+#[derive(Clone)]
+#[contracttype]
+pub struct ExtensionProposal {
+    /// Proposed new deadline (Unix timestamp)
+    pub new_deadline: u64,
+    /// Total votes in favor
+    pub votes_for: i128,
+    /// Total votes against
+    pub votes_against: i128,
+    /// Proposal creation timestamp
+    pub created_at: u64,
+    /// Voting period end timestamp
+    pub voting_ends_at: u64,
+    /// Whether the proposal has been executed
+    pub executed: bool,
 }

@@ -37,4 +37,12 @@ pub enum ContractError {
     InvalidGoal = 12,
     /// Token is not accepted by this campaign
     TokenNotAccepted = 13,
+    /// Message exceeds maximum length
+    MessageTooLong = 14,
+    /// Recurring plan is invalid
+    InvalidRecurringPlan = 15,
+    /// Extension voting period has ended
+    VotingEnded = 16,
+    /// Refund amount exceeds limit
+    RefundLimitExceeded = 17,
 }

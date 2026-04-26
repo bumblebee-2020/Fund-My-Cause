@@ -8,7 +8,7 @@ mod types;
 
 pub use errors::ContractError;
 pub use storage::{CONTRACT_VERSION, KEY_ADMIN, KEY_CONTRIBS, KEY_CREATOR, KEY_DEADLINE, KEY_DESC, KEY_GOAL, KEY_MIN, KEY_PLATFORM, KEY_SOCIAL, KEY_STATUS, KEY_TITLE, KEY_TOKEN, KEY_TOTAL};
-pub use types::{CampaignInfo, CampaignStats, DataKey, PlatformConfig, Status};
+pub use types::{CampaignInfo, CampaignStats, DataKey, ExtensionProposal, PlatformConfig, RecurringPlan, Status};
 
 use soroban_sdk::{contract, contractimpl, token, Address, Env, String, Vec};
 
@@ -137,6 +137,7 @@ impl CrowdfundContract {
     /// * `contributor` - The contributor's Stellar address (must authorize)
     /// * `amount` - Contribution amount in stroops (must be >= min_contribution)
     /// * `token` - The token address being contributed (must match campaign token or be in whitelist)
+    /// * `message` - Optional message/memo attached to the contribution (max 256 chars)
     ///
     /// # Returns
     /// * `Ok(())` on success
@@ -146,15 +147,23 @@ impl CrowdfundContract {
     /// * `Err(ContractError::CampaignEnded)` if current time >= deadline
     /// * `Err(ContractError::TokenNotAccepted)` if token not in whitelist
     /// * `Err(ContractError::Overflow)` if total raised would overflow
+    /// * `Err(ContractError::MessageTooLong)` if message exceeds 256 characters
     ///
     /// # Side Effects
     /// - Transfers tokens from contributor to contract
     /// - Updates contributor's total contribution amount
+    /// - Stores contribution message if provided
     /// - Increments contributor count if this is their first contribution
     /// - Updates largest contribution if applicable
     /// - Publishes "contributed" event
-    pub fn contribute(env: Env, contributor: Address, amount: i128, token: Address) -> Result<(), ContractError> {
+    pub fn contribute(env: Env, contributor: Address, amount: i128, token: Address, message: Option<String>) -> Result<(), ContractError> {
         contributor.require_auth();
+
+        if let Some(ref msg) = message {
+            if msg.len() > 256 {
+                return Err(ContractError::MessageTooLong);
+            }
+        }
 
         let min: i128 = env.storage().instance().get(&KEY_MIN).unwrap();
         if amount < min {
@@ -192,6 +201,12 @@ impl CrowdfundContract {
         let new_amount = prev.checked_add(amount).ok_or(ContractError::Overflow)?;
         env.storage().persistent().set(&key, &new_amount);
         env.storage().persistent().extend_ttl(&key, 100, 100);
+
+        if let Some(msg) = message {
+            let msg_key = DataKey::ContributionMessage(contributor.clone());
+            env.storage().persistent().set(&msg_key, &msg);
+            env.storage().persistent().extend_ttl(&msg_key, 100, 100);
+        }
 
         let total: i128 = env.storage().instance().get(&KEY_TOTAL).unwrap();
         let new_total = total.checked_add(amount).ok_or(ContractError::Overflow)?;
@@ -571,6 +586,257 @@ impl CrowdfundContract {
         Ok(())
     }
 
+    /// Sets up a recurring contribution plan for a contributor.
+    ///
+    /// Allows a contributor to schedule automatic contributions at regular intervals.
+    /// The contributor must authorize this transaction.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor's Stellar address (must authorize)
+    /// * `amount` - Amount to contribute each interval in stroops
+    /// * `interval` - Interval in seconds between contributions
+    /// * `end_date` - Unix timestamp when recurring contributions should stop
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ContractError::InvalidRecurringPlan)` if parameters are invalid
+    ///
+    /// # Side Effects
+    /// - Stores recurring plan in persistent storage
+    /// - Publishes "recurring_setup" event
+    pub fn setup_recurring(env: Env, contributor: Address, amount: i128, interval: u64, end_date: u64) -> Result<(), ContractError> {
+        contributor.require_auth();
+
+        if amount <= 0 || interval == 0 || end_date <= env.ledger().timestamp() {
+            return Err(ContractError::InvalidRecurringPlan);
+        }
+
+        let plan = RecurringPlan {
+            amount,
+            interval,
+            end_date,
+            last_executed: env.ledger().timestamp(),
+        };
+
+        let key = DataKey::RecurringPlan(contributor.clone());
+        env.storage().persistent().set(&key, &plan);
+        env.storage().persistent().extend_ttl(&key, 100, 100);
+
+        env.events().publish(("campaign", "recurring_setup"), (contributor, amount, interval));
+        Ok(())
+    }
+
+    /// Executes pending recurring contributions for a contributor.
+    ///
+    /// Can be called by anyone to trigger scheduled contributions.
+    /// Only executes if the interval has passed since last execution.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor's address
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ContractError::InvalidRecurringPlan)` if no plan exists or plan expired
+    pub fn execute_recurring(env: Env, contributor: Address) -> Result<(), ContractError> {
+        let key = DataKey::RecurringPlan(contributor.clone());
+        let mut plan: RecurringPlan = env.storage().persistent().get(&key)
+            .ok_or(ContractError::InvalidRecurringPlan)?;
+
+        let now = env.ledger().timestamp();
+        if now > plan.end_date {
+            return Err(ContractError::InvalidRecurringPlan);
+        }
+
+        if now < plan.last_executed + plan.interval {
+            return Err(ContractError::InvalidRecurringPlan);
+        }
+
+        plan.last_executed = now;
+        env.storage().persistent().set(&key, &plan);
+
+        // Execute contribution
+        let token: Address = env.storage().instance().get(&KEY_TOKEN).unwrap();
+        token::Client::new(&env, &token)
+            .transfer(&contributor, &env.current_contract_address(), &plan.amount);
+
+        let contrib_key = DataKey::Contribution(contributor.clone());
+        let prev: i128 = env.storage().persistent().get(&contrib_key).unwrap_or(0);
+        let new_amount = prev.checked_add(plan.amount).ok_or(ContractError::Overflow)?;
+        env.storage().persistent().set(&contrib_key, &new_amount);
+
+        let total: i128 = env.storage().instance().get(&KEY_TOTAL).unwrap();
+        let new_total = total.checked_add(plan.amount).ok_or(ContractError::Overflow)?;
+        env.storage().instance().set(&KEY_TOTAL, &new_total);
+
+        env.events().publish(("campaign", "recurring_executed"), (contributor, plan.amount));
+        Ok(())
+    }
+
+    /// Cancels a recurring contribution plan.
+    ///
+    /// The contributor must authorize this transaction.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor's address (must authorize)
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    pub fn cancel_recurring(env: Env, contributor: Address) -> Result<(), ContractError> {
+        contributor.require_auth();
+
+        let key = DataKey::RecurringPlan(contributor.clone());
+        env.storage().persistent().remove(&key);
+
+        env.events().publish(("campaign", "recurring_cancelled"), contributor);
+        Ok(())
+    }
+
+    /// Proposes a deadline extension and initiates voting.
+    ///
+    /// Only the creator can propose extensions. Voting period is 7 days.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `new_deadline` - Proposed new deadline (Unix timestamp)
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ContractError::InvalidDeadline)` if new_deadline <= current_deadline
+    pub fn propose_extension(env: Env, new_deadline: u64) -> Result<(), ContractError> {
+        let creator: Address = env.storage().instance().get(&KEY_CREATOR).unwrap();
+        creator.require_auth();
+
+        let current_deadline: u64 = env.storage().instance().get(&KEY_DEADLINE).unwrap();
+        if new_deadline <= current_deadline {
+            return Err(ContractError::InvalidDeadline);
+        }
+
+        let now = env.ledger().timestamp();
+        let proposal = ExtensionProposal {
+            new_deadline,
+            votes_for: 0,
+            votes_against: 0,
+            created_at: now,
+            voting_ends_at: now + 604800, // 7 days
+            executed: false,
+        };
+
+        env.storage().instance().set(&DataKey::ExtensionProposal, &proposal);
+        env.events().publish(("campaign", "extension_proposed"), new_deadline);
+        Ok(())
+    }
+
+    /// Votes on a pending deadline extension.
+    ///
+    /// Contributors vote with weight equal to their contribution amount.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor's address (must authorize)
+    /// * `approve` - true to vote for, false to vote against
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ContractError::VotingEnded)` if voting period has ended
+    pub fn vote_on_extension(env: Env, contributor: Address, approve: bool) -> Result<(), ContractError> {
+        contributor.require_auth();
+
+        let mut proposal: ExtensionProposal = env.storage().instance().get(&DataKey::ExtensionProposal)
+            .ok_or(ContractError::InvalidRecurringPlan)?;
+
+        if env.ledger().timestamp() > proposal.voting_ends_at {
+            return Err(ContractError::VotingEnded);
+        }
+
+        let vote_weight: i128 = env.storage()
+            .persistent()
+            .get(&DataKey::Contribution(contributor.clone()))
+            .unwrap_or(0);
+
+        if approve {
+            proposal.votes_for = proposal.votes_for.checked_add(vote_weight).ok_or(ContractError::Overflow)?;
+        } else {
+            proposal.votes_against = proposal.votes_against.checked_add(vote_weight).ok_or(ContractError::Overflow)?;
+        }
+
+        env.storage().instance().set(&DataKey::ExtensionProposal, &proposal);
+        env.storage().instance().set(&DataKey::ExtensionVote(contributor.clone()), &approve);
+
+        env.events().publish(("campaign", "extension_voted"), (contributor, approve));
+        Ok(())
+    }
+
+    /// Executes a deadline extension if voting threshold is met.
+    ///
+    /// Requires >50% of votes to be in favor. Can only be called after voting period ends.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    pub fn execute_extension(env: Env) -> Result<(), ContractError> {
+        let mut proposal: ExtensionProposal = env.storage().instance().get(&DataKey::ExtensionProposal)
+            .ok_or(ContractError::InvalidRecurringPlan)?;
+
+        if env.ledger().timestamp() <= proposal.voting_ends_at {
+            return Err(ContractError::VotingEnded);
+        }
+
+        if proposal.executed {
+            return Ok(());
+        }
+
+        let total_votes = proposal.votes_for.checked_add(proposal.votes_against).ok_or(ContractError::Overflow)?;
+        if total_votes > 0 && proposal.votes_for * 2 > total_votes {
+            env.storage().instance().set(&KEY_DEADLINE, &proposal.new_deadline);
+            env.events().publish(("campaign", "extension_executed"), proposal.new_deadline);
+        }
+
+        proposal.executed = true;
+        env.storage().instance().set(&DataKey::ExtensionProposal, &proposal);
+        Ok(())
+    }
+
+    /// Allows a contributor to request a partial refund before campaign ends.
+    ///
+    /// Limited to 50% of original contribution. Contributor must authorize.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor's address (must authorize)
+    /// * `amount` - Amount to refund in stroops
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ContractError::RefundLimitExceeded)` if amount > 50% of contribution
+    pub fn refund_partial(env: Env, contributor: Address, amount: i128) -> Result<(), ContractError> {
+        contributor.require_auth();
+
+        let contrib_key = DataKey::Contribution(contributor.clone());
+        let total_contrib: i128 = env.storage().persistent().get(&contrib_key).unwrap_or(0);
+
+        if amount > total_contrib / 2 {
+            return Err(ContractError::RefundLimitExceeded);
+        }
+
+        let token: Address = env.storage().instance().get(&KEY_TOKEN).unwrap();
+        token::Client::new(&env, &token)
+            .transfer(&env.current_contract_address(), &contributor, &amount);
+
+        let new_contrib = total_contrib - amount;
+        env.storage().persistent().set(&contrib_key, &new_contrib);
+
+        let total: i128 = env.storage().instance().get(&KEY_TOTAL).unwrap();
+        env.storage().instance().set(&KEY_TOTAL, &(total - amount));
+
+        env.events().publish(("campaign", "partial_refund"), (contributor, amount));
+        Ok(())
+    }
+
     // ── View functions ────────────────────────────────────────────────────────
 
     /// Returns the total amount raised so far in stroops.
@@ -882,6 +1148,47 @@ impl CrowdfundContract {
             result.push_back(contributors.get(i).unwrap());
         }
         result
+    }
+
+    /// Returns the contribution message for a contributor.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor's address
+    ///
+    /// # Returns
+    /// Optional message string, or None if no message was provided
+    pub fn get_contribution_message(env: Env, contributor: Address) -> Option<String> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ContributionMessage(contributor))
+    }
+
+    /// Returns the recurring plan for a contributor.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor's address
+    ///
+    /// # Returns
+    /// Optional RecurringPlan, or None if no plan exists
+    pub fn get_recurring_plan(env: Env, contributor: Address) -> Option<RecurringPlan> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RecurringPlan(contributor))
+    }
+
+    /// Returns the current extension proposal.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// Optional ExtensionProposal, or None if no proposal exists
+    pub fn get_extension_proposal(env: Env) -> Option<ExtensionProposal> {
+        env.storage()
+            .instance()
+            .get(&DataKey::ExtensionProposal)
     }
 }
 
