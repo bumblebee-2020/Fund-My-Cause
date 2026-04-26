@@ -5,7 +5,13 @@
 use soroban_sdk::Symbol;
 
 /// Contract version for upgrades and compatibility tracking
-pub const CONTRACT_VERSION: u32 = 3;
+pub const CONTRACT_VERSION: u32 = 4;
+
+/// Maximum number of updates per campaign
+pub const MAX_UPDATES: u32 = 100;
+
+/// Maximum number of milestones per campaign
+pub const MAX_MILESTONES: u32 = 20;
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 /// Storage key for campaign creator address
@@ -36,3 +42,5 @@ pub const KEY_SOCIAL: Symbol = soroban_sdk::symbol_short!("SOCIAL");
 pub const KEY_PLATFORM: Symbol = soroban_sdk::symbol_short!("PLATFORM");
 /// Storage key for contract administrator
 pub const KEY_ADMIN: Symbol = soroban_sdk::symbol_short!("ADMIN");
+/// Storage key for rate limit configuration (max amount per hour)
+pub const KEY_RATE_LIMIT: Symbol = soroban_sdk::symbol_short!("RATELIMIT");

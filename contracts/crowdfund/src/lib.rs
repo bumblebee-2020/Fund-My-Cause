@@ -73,6 +73,9 @@ impl CrowdfundContract {
         social_links: Option<Vec<String>>,
         platform_config: Option<PlatformConfig>,
         accepted_tokens: Option<Vec<Address>>,
+        category: Category,
+        vesting: Option<VestingSchedule>,
+        penalty_bps: Option<u32>,
     ) -> Result<(), ContractError> {
         if env.storage().instance().has(&KEY_CREATOR) {
             return Err(ContractError::AlreadyInitialized);
@@ -110,6 +113,7 @@ impl CrowdfundContract {
         env.storage().instance().set(&KEY_DESC, &description);
         env.storage().instance().set(&KEY_TOTAL, &0i128);
         env.storage().instance().set(&KEY_STATUS, &Status::Active);
+        env.storage().instance().set(&KEY_CATEGORY, &category);
         env.storage().instance().set(&DataKey::ContributorCount, &0u32);
         env.storage().instance().set(&DataKey::LargestContribution, &0i128);
 
@@ -117,15 +121,28 @@ impl CrowdfundContract {
             env.storage().instance().set(&KEY_SOCIAL, &links);
         }
 
-        env.storage().instance().set(&DataKey::ContributorCount, &0u32);
-        env.storage().instance().set(&DataKey::LargestContribution, &0i128);
-
         if let Some(tokens) = accepted_tokens {
             env.storage().instance().set(&DataKey::AcceptedTokens, &tokens);
         }
 
+        if let Some(v) = vesting {
+            env.storage().instance().set(&KEY_VESTING, &v);
+        }
+
+        if let Some(p) = penalty_bps {
+            env.storage().instance().set(&DataKey::PenaltyBps, &p);
+        }
+
         let empty: Vec<Address> = Vec::new(&env);
         env.storage().persistent().set(&KEY_CONTRIBS, &empty);
+
+        let mut history: Vec<GoalAdjustment> = Vec::new(&env);
+        history.push_back(GoalAdjustment {
+            previous_goal: 0,
+            new_goal: goal,
+            timestamp: env.ledger().timestamp(),
+        });
+        env.storage().persistent().set(&KEY_GOAL_HISTORY, &history);
 
         env.events().publish(("campaign", "initialized"), ());
         Ok(())
@@ -142,6 +159,7 @@ impl CrowdfundContract {
     /// * `contributor` - The contributor's Stellar address (must authorize)
     /// * `amount` - Contribution amount in stroops (must be >= min_contribution)
     /// * `token` - The token address being contributed (must match campaign token or be in whitelist)
+    /// * `message` - Optional message/memo attached to the contribution (max 256 chars)
     ///
     /// # Returns
     /// * `Ok(())` on success
@@ -151,15 +169,24 @@ impl CrowdfundContract {
     /// * `Err(ContractError::CampaignEnded)` if current time >= deadline
     /// * `Err(ContractError::TokenNotAccepted)` if token not in whitelist
     /// * `Err(ContractError::Overflow)` if total raised would overflow
+    /// * `Err(ContractError::MessageTooLong)` if message exceeds 256 characters
     ///
     /// # Side Effects
     /// - Transfers tokens from contributor to contract
     /// - Updates contributor's total contribution amount
+    /// - Stores contribution message if provided
     /// - Increments contributor count if this is their first contribution
     /// - Updates largest contribution if applicable
+    /// - Stores anonymity flag if anonymous=true
     /// - Publishes "contributed" event
-    pub fn contribute(env: Env, contributor: Address, amount: i128, token: Address) -> Result<(), ContractError> {
+    pub fn contribute(env: Env, contributor: Address, amount: i128, token: Address, message: Option<String>) -> Result<(), ContractError> {
         contributor.require_auth();
+
+        if let Some(ref msg) = message {
+            if msg.len() > 256 {
+                return Err(ContractError::MessageTooLong);
+            }
+        }
 
         let min: i128 = env.storage().instance().get(&KEY_MIN).unwrap();
         if amount < min {
@@ -188,6 +215,26 @@ impl CrowdfundContract {
             return Err(ContractError::CampaignEnded);
         }
 
+        // Check rate limit
+        if let Some(rate_limit) = env.storage().instance().get::<_, i128>(&KEY_RATE_LIMIT) {
+            let now = env.ledger().timestamp();
+            let ts_key = DataKey::RateLimitTimestamp(contributor.clone());
+            let last_ts: u64 = env.storage().persistent().get(&ts_key).unwrap_or(0);
+            
+            if now - last_ts < 3600 {
+                let amt_key = DataKey::RateLimitAmount(contributor.clone());
+                let period_amount: i128 = env.storage().persistent().get(&amt_key).unwrap_or(0);
+                if period_amount + amount > rate_limit {
+                    return Err(ContractError::RateLimitExceeded);
+                }
+                env.storage().persistent().set(&amt_key, &(period_amount + amount));
+            } else {
+                let amt_key = DataKey::RateLimitAmount(contributor.clone());
+                env.storage().persistent().set(&ts_key, &now);
+                env.storage().persistent().set(&amt_key, &amount);
+            }
+        }
+
         // Validate token against whitelist if one is set, otherwise fall back to default token
         let default_token: Address = env.storage().instance().get(&KEY_TOKEN).unwrap();
         if let Some(whitelist) = env.storage().instance().get::<_, Vec<Address>>(&DataKey::AcceptedTokens) {
@@ -207,9 +254,30 @@ impl CrowdfundContract {
         env.storage().persistent().set(&key, &new_amount);
         env.storage().persistent().extend_ttl(&key, 100, 100);
 
+        if let Some(msg) = message {
+            let msg_key = DataKey::ContributionMessage(contributor.clone());
+            env.storage().persistent().set(&msg_key, &msg);
+            env.storage().persistent().extend_ttl(&msg_key, 100, 100);
+        }
+
         let total: i128 = env.storage().instance().get(&KEY_TOTAL).unwrap();
         let new_total = total.checked_add(amount).ok_or(ContractError::Overflow)?;
-        env.storage().instance().set(&KEY_TOTAL, &new_total);
+
+        // Apply matching if configured
+        let mut matched_amount = 0i128;
+        if let Some(config) = env.storage().instance().get::<_, MatchingConfig>(&DataKey::MatchingConfig) {
+            let match_amount = (amount * config.match_ratio as i128) / 10_000;
+            let total_matched: i128 = env.storage().instance().get(&DataKey::TotalMatched).unwrap_or(0);
+            let available_match = config.max_match - total_matched;
+            matched_amount = match_amount.min(available_match).max(0);
+            
+            if matched_amount > 0 {
+                env.storage().instance().set(&DataKey::TotalMatched, &(total_matched + matched_amount));
+            }
+        }
+
+        let final_total = new_total.checked_add(matched_amount).ok_or(ContractError::Overflow)?;
+        env.storage().instance().set(&KEY_TOTAL, &final_total);
 
         let presence_key = DataKey::ContributorPresence(contributor.clone());
         let is_present: bool = env.storage().persistent().get(&presence_key).unwrap_or(false);
@@ -219,30 +287,26 @@ impl CrowdfundContract {
             let count: u32 = env.storage().instance().get(&DataKey::ContributorCount).unwrap();
             env.storage().instance().set(&DataKey::ContributorCount, &(count + 1));
 
-            let mut contributors: Vec<Address> = env
-                .storage()
-                .persistent()
-                .get(&KEY_CONTRIBS)
-                .unwrap_or_else(|| Vec::new(&env));
-            contributors.push_back(contributor.clone());
-            env.storage().persistent().set(&KEY_CONTRIBS, &contributors);
-            env.storage().persistent().extend_ttl(&KEY_CONTRIBS, 100, 100);
+            if !anonymous {
+                let mut contributors: Vec<Address> = env
+                    .storage()
+                    .persistent()
+                    .get(&KEY_CONTRIBS)
+                    .unwrap_or_else(|| Vec::new(&env));
+                contributors.push_back(contributor.clone());
+                env.storage().persistent().set(&KEY_CONTRIBS, &contributors);
+                env.storage().persistent().extend_ttl(&KEY_CONTRIBS, 100, 100);
+            }
+        }
+
+        if anonymous {
+            env.storage().persistent().set(&DataKey::AnonymousContribution(contributor.clone()), &true);
+            env.storage().persistent().extend_ttl(&DataKey::AnonymousContribution(contributor.clone()), 100, 100);
         }
 
         let largest: i128 = env.storage().instance().get(&DataKey::LargestContribution).unwrap();
         if new_amount > largest {
             env.storage().instance().set(&DataKey::LargestContribution, &new_amount);
-        }
-
-        let mut contributors: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&KEY_CONTRIBS)
-            .unwrap_or_else(|| Vec::new(&env));
-        if !contributors.contains(&contributor) {
-            contributors.push_back(contributor.clone());
-            env.storage().persistent().set(&KEY_CONTRIBS, &contributors);
-            env.storage().persistent().extend_ttl(&KEY_CONTRIBS, 100, 100);
         }
 
         env.storage().instance().extend_ttl(17280, 518400);
@@ -301,22 +365,31 @@ impl CrowdfundContract {
         let token_address: Address = env.storage().instance().get(&KEY_TOKEN).unwrap();
         let token_client = token::Client::new(&env, &token_address);
 
-        let payout = if let Some(config) = env.storage().instance().get::<_, PlatformConfig>(&KEY_PLATFORM) {
+        let mut payout = total;
+        if let Some(config) = env.storage().instance().get::<_, PlatformConfig>(&KEY_PLATFORM) {
             let fee = total * config.fee_bps as i128 / 10_000;
             token_client.transfer(&env.current_contract_address(), &config.address, &fee);
-            total - fee
+            payout = total - fee;
+        }
+
+        // Apply vesting if configured
+        if let Some(vesting) = env.storage().instance().get::<_, VestingSchedule>(&KEY_VESTING) {
+            let now = env.ledger().timestamp();
+            if now < vesting.cliff {
+                return Err(ContractError::VestingNotComplete);
+            }
+            let vested = if now >= vesting.cliff + vesting.duration {
+                payout
+            } else {
+                let elapsed = now - vesting.cliff;
+                payout * elapsed as i128 / vesting.duration as i128
+            };
+            token_client.transfer(&env.current_contract_address(), &creator, &vested);
         } else {
-            total
-        };
+            token_client.transfer(&env.current_contract_address(), &creator, &payout);
+        }
 
-        token_client.transfer(&env.current_contract_address(), &creator, &payout);
-
-        // Extend instance storage TTL after successful withdrawal.
-        // This ensures contract metadata remains accessible for historical reference
-        // and potential future interactions (e.g., viewing campaign results).
-        // Uses same TTL strategy as contribute: threshold 17280, extension 518400 ledgers.
         env.storage().instance().extend_ttl(17280, 518400);
-
         env.storage().instance().set(&KEY_TOTAL, &0i128);
         env.storage().instance().set(&KEY_STATUS, &Status::Successful);
         env.storage().instance().extend_ttl(17280, 518400);
@@ -529,7 +602,121 @@ impl CrowdfundContract {
         Ok(refunded)
     }
 
-    /// Pauses the campaign, preventing new contributions.
+    /// Sets the rate limit for contributions per hour (admin only).
+    ///
+    /// Configures the maximum amount a single address can contribute within a 1-hour window.
+    /// Set to 0 to disable rate limiting.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `max_amount_per_hour` - Maximum contribution amount per hour in stroops (0 = disabled)
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    ///
+    /// # Side Effects
+    /// - Updates rate limit configuration
+    /// - Publishes "RateLimitUpdated" event
+    pub fn set_rate_limit(env: Env, max_amount_per_hour: i128) -> Result<(), ContractError> {
+        let admin: Address = env.storage().instance().get(&KEY_ADMIN).unwrap();
+        admin.require_auth();
+        
+        if max_amount_per_hour > 0 {
+            env.storage().instance().set(&KEY_RATE_LIMIT, &max_amount_per_hour);
+        } else {
+            env.storage().instance().set(&KEY_RATE_LIMIT, &0i128);
+        }
+        env.events().publish(("campaign", "rate_limit_updated"), max_amount_per_hour);
+        Ok(())
+    }
+
+    /// Initiates an emergency withdrawal (admin only).
+    ///
+    /// Starts a time-locked emergency withdrawal process. After the lock period expires,
+    /// the admin can call `execute_emergency_withdrawal()` to recover funds.
+    /// This requires admin authorization and can be cancelled before execution.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `lock_period` - Time in seconds to lock the withdrawal (e.g., 604800 for 7 days)
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    ///
+    /// # Side Effects
+    /// - Sets emergency lock time to current time + lock_period
+    /// - Publishes "EmergencyWithdrawalInitiated" event
+    pub fn initiate_emergency_withdrawal(env: Env, lock_period: u64) -> Result<(), ContractError> {
+        let admin: Address = env.storage().instance().get(&KEY_ADMIN).unwrap();
+        admin.require_auth();
+        
+        let lock_time = env.ledger().timestamp() + lock_period;
+        env.storage().instance().set(&DataKey::EmergencyLockTime, &lock_time);
+        env.events().publish(("campaign", "emergency_initiated"), lock_time);
+        Ok(())
+    }
+
+    /// Executes the emergency withdrawal (admin only).
+    ///
+    /// Transfers all funds to the admin after the lock period has expired.
+    /// Can only be called after the time-lock delay has passed.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ContractError::EmergencyLocked)` if lock period has not expired
+    ///
+    /// # Side Effects
+    /// - Transfers all funds to admin
+    /// - Clears emergency lock time
+    /// - Publishes "EmergencyWithdrawalExecuted" event
+    pub fn execute_emergency_withdrawal(env: Env) -> Result<(), ContractError> {
+        let admin: Address = env.storage().instance().get(&KEY_ADMIN).unwrap();
+        admin.require_auth();
+        
+        let lock_time: u64 = env.storage().instance().get(&DataKey::EmergencyLockTime).unwrap_or(0);
+        if lock_time == 0 || env.ledger().timestamp() < lock_time {
+            return Err(ContractError::EmergencyLocked);
+        }
+        
+        let total: i128 = env.storage().instance().get(&KEY_TOTAL).unwrap();
+        if total > 0 {
+            let token_address: Address = env.storage().instance().get(&KEY_TOKEN).unwrap();
+            token::Client::new(&env, &token_address)
+                .transfer(&env.current_contract_address(), &admin, &total);
+            env.storage().instance().set(&KEY_TOTAL, &0i128);
+        }
+        
+        env.storage().instance().set(&DataKey::EmergencyLockTime, &0u64);
+        env.events().publish(("campaign", "emergency_executed"), total);
+        Ok(())
+    }
+
+    /// Cancels a pending emergency withdrawal (admin only).
+    ///
+    /// Removes the emergency lock, preventing the withdrawal from being executed.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    ///
+    /// # Side Effects
+    /// - Clears emergency lock time
+    /// - Publishes "EmergencyWithdrawalCancelled" event
+    pub fn cancel_emergency_withdrawal(env: Env) -> Result<(), ContractError> {
+        let admin: Address = env.storage().instance().get(&KEY_ADMIN).unwrap();
+        admin.require_auth();
+        
+        env.storage().instance().set(&DataKey::EmergencyLockTime, &0u64);
+        env.events().publish(("campaign", "emergency_cancelled"), ());
+        Ok(())
+    }
+
+    /// Verify campaign (admin only).
     ///
     /// Can only be called while the campaign is in Active status.
     /// The admin (creator) must authorize this transaction.
@@ -582,6 +769,257 @@ impl CrowdfundContract {
         admin.require_auth();
         env.storage().instance().set(&KEY_STATUS, &Status::Active);
         env.events().publish(("campaign", "unpaused"), ());
+        Ok(())
+    }
+
+    /// Sets up a recurring contribution plan for a contributor.
+    ///
+    /// Allows a contributor to schedule automatic contributions at regular intervals.
+    /// The contributor must authorize this transaction.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor's Stellar address (must authorize)
+    /// * `amount` - Amount to contribute each interval in stroops
+    /// * `interval` - Interval in seconds between contributions
+    /// * `end_date` - Unix timestamp when recurring contributions should stop
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ContractError::InvalidRecurringPlan)` if parameters are invalid
+    ///
+    /// # Side Effects
+    /// - Stores recurring plan in persistent storage
+    /// - Publishes "recurring_setup" event
+    pub fn setup_recurring(env: Env, contributor: Address, amount: i128, interval: u64, end_date: u64) -> Result<(), ContractError> {
+        contributor.require_auth();
+
+        if amount <= 0 || interval == 0 || end_date <= env.ledger().timestamp() {
+            return Err(ContractError::InvalidRecurringPlan);
+        }
+
+        let plan = RecurringPlan {
+            amount,
+            interval,
+            end_date,
+            last_executed: env.ledger().timestamp(),
+        };
+
+        let key = DataKey::RecurringPlan(contributor.clone());
+        env.storage().persistent().set(&key, &plan);
+        env.storage().persistent().extend_ttl(&key, 100, 100);
+
+        env.events().publish(("campaign", "recurring_setup"), (contributor, amount, interval));
+        Ok(())
+    }
+
+    /// Executes pending recurring contributions for a contributor.
+    ///
+    /// Can be called by anyone to trigger scheduled contributions.
+    /// Only executes if the interval has passed since last execution.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor's address
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ContractError::InvalidRecurringPlan)` if no plan exists or plan expired
+    pub fn execute_recurring(env: Env, contributor: Address) -> Result<(), ContractError> {
+        let key = DataKey::RecurringPlan(contributor.clone());
+        let mut plan: RecurringPlan = env.storage().persistent().get(&key)
+            .ok_or(ContractError::InvalidRecurringPlan)?;
+
+        let now = env.ledger().timestamp();
+        if now > plan.end_date {
+            return Err(ContractError::InvalidRecurringPlan);
+        }
+
+        if now < plan.last_executed + plan.interval {
+            return Err(ContractError::InvalidRecurringPlan);
+        }
+
+        plan.last_executed = now;
+        env.storage().persistent().set(&key, &plan);
+
+        // Execute contribution
+        let token: Address = env.storage().instance().get(&KEY_TOKEN).unwrap();
+        token::Client::new(&env, &token)
+            .transfer(&contributor, &env.current_contract_address(), &plan.amount);
+
+        let contrib_key = DataKey::Contribution(contributor.clone());
+        let prev: i128 = env.storage().persistent().get(&contrib_key).unwrap_or(0);
+        let new_amount = prev.checked_add(plan.amount).ok_or(ContractError::Overflow)?;
+        env.storage().persistent().set(&contrib_key, &new_amount);
+
+        let total: i128 = env.storage().instance().get(&KEY_TOTAL).unwrap();
+        let new_total = total.checked_add(plan.amount).ok_or(ContractError::Overflow)?;
+        env.storage().instance().set(&KEY_TOTAL, &new_total);
+
+        env.events().publish(("campaign", "recurring_executed"), (contributor, plan.amount));
+        Ok(())
+    }
+
+    /// Cancels a recurring contribution plan.
+    ///
+    /// The contributor must authorize this transaction.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor's address (must authorize)
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    pub fn cancel_recurring(env: Env, contributor: Address) -> Result<(), ContractError> {
+        contributor.require_auth();
+
+        let key = DataKey::RecurringPlan(contributor.clone());
+        env.storage().persistent().remove(&key);
+
+        env.events().publish(("campaign", "recurring_cancelled"), contributor);
+        Ok(())
+    }
+
+    /// Proposes a deadline extension and initiates voting.
+    ///
+    /// Only the creator can propose extensions. Voting period is 7 days.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `new_deadline` - Proposed new deadline (Unix timestamp)
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ContractError::InvalidDeadline)` if new_deadline <= current_deadline
+    pub fn propose_extension(env: Env, new_deadline: u64) -> Result<(), ContractError> {
+        let creator: Address = env.storage().instance().get(&KEY_CREATOR).unwrap();
+        creator.require_auth();
+
+        let current_deadline: u64 = env.storage().instance().get(&KEY_DEADLINE).unwrap();
+        if new_deadline <= current_deadline {
+            return Err(ContractError::InvalidDeadline);
+        }
+
+        let now = env.ledger().timestamp();
+        let proposal = ExtensionProposal {
+            new_deadline,
+            votes_for: 0,
+            votes_against: 0,
+            created_at: now,
+            voting_ends_at: now + 604800, // 7 days
+            executed: false,
+        };
+
+        env.storage().instance().set(&DataKey::ExtensionProposal, &proposal);
+        env.events().publish(("campaign", "extension_proposed"), new_deadline);
+        Ok(())
+    }
+
+    /// Votes on a pending deadline extension.
+    ///
+    /// Contributors vote with weight equal to their contribution amount.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor's address (must authorize)
+    /// * `approve` - true to vote for, false to vote against
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ContractError::VotingEnded)` if voting period has ended
+    pub fn vote_on_extension(env: Env, contributor: Address, approve: bool) -> Result<(), ContractError> {
+        contributor.require_auth();
+
+        let mut proposal: ExtensionProposal = env.storage().instance().get(&DataKey::ExtensionProposal)
+            .ok_or(ContractError::InvalidRecurringPlan)?;
+
+        if env.ledger().timestamp() > proposal.voting_ends_at {
+            return Err(ContractError::VotingEnded);
+        }
+
+        let vote_weight: i128 = env.storage()
+            .persistent()
+            .get(&DataKey::Contribution(contributor.clone()))
+            .unwrap_or(0);
+
+        if approve {
+            proposal.votes_for = proposal.votes_for.checked_add(vote_weight).ok_or(ContractError::Overflow)?;
+        } else {
+            proposal.votes_against = proposal.votes_against.checked_add(vote_weight).ok_or(ContractError::Overflow)?;
+        }
+
+        env.storage().instance().set(&DataKey::ExtensionProposal, &proposal);
+        env.storage().instance().set(&DataKey::ExtensionVote(contributor.clone()), &approve);
+
+        env.events().publish(("campaign", "extension_voted"), (contributor, approve));
+        Ok(())
+    }
+
+    /// Executes a deadline extension if voting threshold is met.
+    ///
+    /// Requires >50% of votes to be in favor. Can only be called after voting period ends.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    pub fn execute_extension(env: Env) -> Result<(), ContractError> {
+        let mut proposal: ExtensionProposal = env.storage().instance().get(&DataKey::ExtensionProposal)
+            .ok_or(ContractError::InvalidRecurringPlan)?;
+
+        if env.ledger().timestamp() <= proposal.voting_ends_at {
+            return Err(ContractError::VotingEnded);
+        }
+
+        if proposal.executed {
+            return Ok(());
+        }
+
+        let total_votes = proposal.votes_for.checked_add(proposal.votes_against).ok_or(ContractError::Overflow)?;
+        if total_votes > 0 && proposal.votes_for * 2 > total_votes {
+            env.storage().instance().set(&KEY_DEADLINE, &proposal.new_deadline);
+            env.events().publish(("campaign", "extension_executed"), proposal.new_deadline);
+        }
+
+        proposal.executed = true;
+        env.storage().instance().set(&DataKey::ExtensionProposal, &proposal);
+        Ok(())
+    }
+
+    /// Allows a contributor to request a partial refund before campaign ends.
+    ///
+    /// Limited to 50% of original contribution. Contributor must authorize.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor's address (must authorize)
+    /// * `amount` - Amount to refund in stroops
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ContractError::RefundLimitExceeded)` if amount > 50% of contribution
+    pub fn refund_partial(env: Env, contributor: Address, amount: i128) -> Result<(), ContractError> {
+        contributor.require_auth();
+
+        let contrib_key = DataKey::Contribution(contributor.clone());
+        let total_contrib: i128 = env.storage().persistent().get(&contrib_key).unwrap_or(0);
+
+        if amount > total_contrib / 2 {
+            return Err(ContractError::RefundLimitExceeded);
+        }
+
+        let token: Address = env.storage().instance().get(&KEY_TOKEN).unwrap();
+        token::Client::new(&env, &token)
+            .transfer(&env.current_contract_address(), &contributor, &amount);
+
+        let new_contrib = total_contrib - amount;
+        env.storage().persistent().set(&contrib_key, &new_contrib);
+
+        let total: i128 = env.storage().instance().get(&KEY_TOTAL).unwrap();
+        env.storage().instance().set(&KEY_TOTAL, &(total - amount));
+
+        env.events().publish(("campaign", "partial_refund"), (contributor, amount));
         Ok(())
     }
 
@@ -841,10 +1279,10 @@ impl CrowdfundContract {
             .get(&KEY_DESC)
             .unwrap_or_else(|| String::from_str(&env, ""));
         let status: Status = env.storage().instance().get(&KEY_STATUS).unwrap();
-        
-        let platform_config: Option<PlatformConfig> = env.storage()
+        let category: Category = env.storage()
             .instance()
-            .get(&KEY_PLATFORM);
+            .get(&KEY_CATEGORY)
+            .unwrap_or(Category::Other);
 
         let (has_platform_config, platform_fee_bps, platform_address) =
             if let Some(config) = env.storage().instance().get::<_, PlatformConfig>(&KEY_PLATFORM) {
@@ -866,7 +1304,61 @@ impl CrowdfundContract {
             has_platform_config,
             platform_fee_bps,
             platform_address,
+            category,
         }
+    }
+
+    /// Returns the campaign category.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// Campaign category
+    pub fn get_category(env: Env) -> Category {
+        env.storage()
+            .instance()
+            .get(&KEY_CATEGORY)
+            .unwrap_or(Category::Other)
+    }
+
+    /// Returns the vesting schedule (if configured).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// Optional VestingSchedule with cliff and duration
+    pub fn get_vesting_info(env: Env) -> Option<VestingSchedule> {
+        env.storage().instance().get(&KEY_VESTING)
+    }
+
+    /// Returns the goal adjustment history.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// Vector of GoalAdjustment entries
+    pub fn get_goal_history(env: Env) -> Vec<GoalAdjustment> {
+        env.storage()
+            .persistent()
+            .get(&KEY_GOAL_HISTORY)
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Returns the penalty fee in basis points (if configured).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// Penalty fee in basis points, or 0 if not configured
+    pub fn get_penalty_bps(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::PenaltyBps)
+            .unwrap_or(0)
     }
 
     /// Returns a paginated list of contributor addresses.
@@ -909,6 +1401,47 @@ impl CrowdfundContract {
             result.push_back(contributors.get(i).unwrap());
         }
         result
+    }
+
+    /// Returns the contribution message for a contributor.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor's address
+    ///
+    /// # Returns
+    /// Optional message string, or None if no message was provided
+    pub fn get_contribution_message(env: Env, contributor: Address) -> Option<String> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ContributionMessage(contributor))
+    }
+
+    /// Returns the recurring plan for a contributor.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `contributor` - The contributor's address
+    ///
+    /// # Returns
+    /// Optional RecurringPlan, or None if no plan exists
+    pub fn get_recurring_plan(env: Env, contributor: Address) -> Option<RecurringPlan> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RecurringPlan(contributor))
+    }
+
+    /// Returns the current extension proposal.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// Optional ExtensionProposal, or None if no proposal exists
+    pub fn get_extension_proposal(env: Env) -> Option<ExtensionProposal> {
+        env.storage()
+            .instance()
+            .get(&DataKey::ExtensionProposal)
     }
 }
 
