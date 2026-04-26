@@ -85,6 +85,8 @@ pub struct CampaignInfo {
     pub platform_fee_bps: u32,
     /// Platform fee recipient address
     pub platform_address: Address,
+    /// Campaign category
+    pub category: Category,
 }
 
 /// Campaign update entry with IPFS hash and timestamp.
@@ -119,6 +121,68 @@ pub struct MatchingConfig {
     pub match_ratio: u32,
     /// Maximum total matching amount in stroops
     pub max_match: i128,
+}
+
+/// Campaign template type.
+#[derive(Clone, Copy, PartialEq, Debug)]
+#[contracttype]
+pub enum TemplateType {
+    /// Charity/nonprofit fundraising
+    Charity,
+    /// Product launch or development
+    Product,
+    /// Event or conference
+    Event,
+    /// Personal cause
+    Personal,
+    /// Custom template
+    Custom,
+}
+
+/// Campaign category.
+#[derive(Clone, Copy, PartialEq, Debug)]
+#[contracttype]
+pub enum Category {
+    /// Charity/nonprofit
+    Charity,
+    /// Technology
+    Technology,
+    /// Creative
+    Creative,
+    /// Event
+    Event,
+    /// Personal
+    Personal,
+    /// Other
+    Other,
+}
+
+/// Campaign template configuration.
+#[derive(Clone)]
+#[contracttype]
+pub struct CampaignTemplate {
+    /// Template type
+    pub template_type: TemplateType,
+    /// Template name
+    pub name: String,
+    /// Template description
+    pub description: String,
+    /// Suggested minimum contribution
+    pub suggested_min: i128,
+    /// Suggested goal multiplier (e.g., 10000 = 1x)
+    pub goal_multiplier: u32,
+}
+
+/// Delegation configuration.
+#[derive(Clone)]
+#[contracttype]
+pub struct Delegation {
+    /// Delegated amount in stroops
+    pub amount: i128,
+    /// Delegate address
+    pub delegate: Address,
+    /// Whether delegation is active
+    pub active: bool,
 }
 
 /// Storage key variants for contract data.

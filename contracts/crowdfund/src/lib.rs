@@ -188,6 +188,17 @@ impl CrowdfundContract {
             }
         }
 
+        // Check blacklist
+        if env.storage().persistent().get::<_, bool>(&DataKey::Blacklist(contributor.clone())).unwrap_or(false) {
+            return Err(ContractError::Blacklisted);
+        }
+
+        // Check whitelist if whitelist-only mode is enabled
+        let whitelist_only: bool = env.storage().instance().get(&DataKey::WhitelistOnly).unwrap_or(false);
+        if whitelist_only && !env.storage().persistent().get::<_, bool>(&DataKey::Whitelist(contributor.clone())).unwrap_or(false) {
+            return Err(ContractError::NotWhitelisted);
+        }
+
         let min: i128 = env.storage().instance().get(&KEY_MIN).unwrap();
         if amount < min {
             return Err(ContractError::BelowMinimum);
@@ -287,21 +298,14 @@ impl CrowdfundContract {
             let count: u32 = env.storage().instance().get(&DataKey::ContributorCount).unwrap();
             env.storage().instance().set(&DataKey::ContributorCount, &(count + 1));
 
-            if !anonymous {
-                let mut contributors: Vec<Address> = env
-                    .storage()
-                    .persistent()
-                    .get(&KEY_CONTRIBS)
-                    .unwrap_or_else(|| Vec::new(&env));
-                contributors.push_back(contributor.clone());
-                env.storage().persistent().set(&KEY_CONTRIBS, &contributors);
-                env.storage().persistent().extend_ttl(&KEY_CONTRIBS, 100, 100);
-            }
-        }
-
-        if anonymous {
-            env.storage().persistent().set(&DataKey::AnonymousContribution(contributor.clone()), &true);
-            env.storage().persistent().extend_ttl(&DataKey::AnonymousContribution(contributor.clone()), 100, 100);
+            let mut contributors: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&KEY_CONTRIBS)
+                .unwrap_or_else(|| Vec::new(&env));
+            contributors.push_back(contributor.clone());
+            env.storage().persistent().set(&KEY_CONTRIBS, &contributors);
+            env.storage().persistent().extend_ttl(&KEY_CONTRIBS, 100, 100);
         }
 
         let largest: i128 = env.storage().instance().get(&DataKey::LargestContribution).unwrap();
@@ -1021,6 +1025,327 @@ impl CrowdfundContract {
 
         env.events().publish(("campaign", "partial_refund"), (contributor, amount));
         Ok(())
+    }
+
+    // ── Whitelist/Blacklist Functions ─────────────────────────────────────────
+
+    /// Adds an address to the whitelist (creator only).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `address` - Address to whitelist
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    pub fn add_to_whitelist(env: Env, address: Address) -> Result<(), ContractError> {
+        let creator: Address = env.storage().instance().get(&KEY_CREATOR).unwrap();
+        creator.require_auth();
+
+        env.storage().persistent().set(&DataKey::Whitelist(address.clone()), &true);
+        env.storage().persistent().extend_ttl(&DataKey::Whitelist(address.clone()), 100, 100);
+        env.events().publish(("campaign", "whitelisted"), address);
+        Ok(())
+    }
+
+    /// Removes an address from the whitelist (creator only).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `address` - Address to remove from whitelist
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    pub fn remove_from_whitelist(env: Env, address: Address) -> Result<(), ContractError> {
+        let creator: Address = env.storage().instance().get(&KEY_CREATOR).unwrap();
+        creator.require_auth();
+
+        env.storage().persistent().remove(&DataKey::Whitelist(address.clone()));
+        env.events().publish(("campaign", "whitelist_removed"), address);
+        Ok(())
+    }
+
+    /// Adds an address to the blacklist (creator only).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `address` - Address to blacklist
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    pub fn add_to_blacklist(env: Env, address: Address) -> Result<(), ContractError> {
+        let creator: Address = env.storage().instance().get(&KEY_CREATOR).unwrap();
+        creator.require_auth();
+
+        env.storage().persistent().set(&DataKey::Blacklist(address.clone()), &true);
+        env.storage().persistent().extend_ttl(&DataKey::Blacklist(address.clone()), 100, 100);
+        env.events().publish(("campaign", "blacklisted"), address);
+        Ok(())
+    }
+
+    /// Removes an address from the blacklist (creator only).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `address` - Address to remove from blacklist
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    pub fn remove_from_blacklist(env: Env, address: Address) -> Result<(), ContractError> {
+        let creator: Address = env.storage().instance().get(&KEY_CREATOR).unwrap();
+        creator.require_auth();
+
+        env.storage().persistent().remove(&DataKey::Blacklist(address.clone()));
+        env.events().publish(("campaign", "blacklist_removed"), address);
+        Ok(())
+    }
+
+    /// Enables whitelist-only mode (creator only).
+    ///
+    /// When enabled, only whitelisted addresses can contribute.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `enabled` - true to enable, false to disable
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    pub fn set_whitelist_only(env: Env, enabled: bool) -> Result<(), ContractError> {
+        let creator: Address = env.storage().instance().get(&KEY_CREATOR).unwrap();
+        creator.require_auth();
+
+        env.storage().instance().set(&DataKey::WhitelistOnly, &enabled);
+        env.events().publish(("campaign", "whitelist_only_set"), enabled);
+        Ok(())
+    }
+
+    /// Checks if an address is whitelisted.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `address` - Address to check
+    ///
+    /// # Returns
+    /// true if whitelisted, false otherwise
+    pub fn is_whitelisted(env: Env, address: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::Whitelist(address))
+            .unwrap_or(false)
+    }
+
+    /// Checks if an address is blacklisted.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `address` - Address to check
+    ///
+    /// # Returns
+    /// true if blacklisted, false otherwise
+    pub fn is_blacklisted(env: Env, address: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::Blacklist(address))
+            .unwrap_or(false)
+    }
+
+    // ── Delegation Functions ──────────────────────────────────────────────────
+
+    /// Delegates contribution authority to another address (delegator must authorize).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `delegator` - The address delegating authority (must authorize)
+    /// * `delegate` - The address receiving delegation authority
+    /// * `amount` - Maximum amount the delegate can contribute on behalf of delegator
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    pub fn delegate_contribution(env: Env, delegator: Address, delegate: Address, amount: i128) -> Result<(), ContractError> {
+        delegator.require_auth();
+
+        if amount <= 0 {
+            return Err(ContractError::InvalidDelegation);
+        }
+
+        let delegation = Delegation {
+            amount,
+            delegate: delegate.clone(),
+            active: true,
+        };
+
+        env.storage().persistent().set(&DataKey::Delegation(delegator.clone()), &delegation);
+        env.storage().persistent().extend_ttl(&DataKey::Delegation(delegator.clone()), 100, 100);
+        env.events().publish(("campaign", "delegation_created"), (delegator, delegate, amount));
+        Ok(())
+    }
+
+    /// Contributes on behalf of a delegator (delegate must authorize).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `delegator` - The address on whose behalf the contribution is made
+    /// * `delegate` - The delegate address (must authorize)
+    /// * `amount` - Contribution amount in stroops
+    /// * `token` - Token address
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    pub fn contribute_on_behalf(env: Env, delegator: Address, delegate: Address, amount: i128, token: Address) -> Result<(), ContractError> {
+        delegate.require_auth();
+
+        let delegation: Delegation = env.storage()
+            .persistent()
+            .get(&DataKey::Delegation(delegator.clone()))
+            .ok_or(ContractError::DelegationNotFound)?;
+
+        if !delegation.active || delegation.delegate != delegate {
+            return Err(ContractError::InvalidDelegation);
+        }
+
+        let delegated_key = DataKey::DelegatedContribution(delegator.clone());
+        let delegated_so_far: i128 = env.storage().persistent().get(&delegated_key).unwrap_or(0);
+        if delegated_so_far + amount > delegation.amount {
+            return Err(ContractError::ExceedsMaximum);
+        }
+
+        // Perform the contribution as if delegator is contributing
+        let min: i128 = env.storage().instance().get(&KEY_MIN).unwrap();
+        if amount < min {
+            return Err(ContractError::BelowMinimum);
+        }
+
+        let status: Status = env.storage().instance().get(&KEY_STATUS).unwrap();
+        if status != Status::Active {
+            return Err(ContractError::NotActive);
+        }
+
+        let deadline: u64 = env.storage().instance().get(&KEY_DEADLINE).unwrap();
+        if env.ledger().timestamp() >= deadline {
+            return Err(ContractError::CampaignEnded);
+        }
+
+        // Check whitelist/blacklist
+        if env.storage().persistent().get::<_, bool>(&DataKey::Blacklist(delegator.clone())).unwrap_or(false) {
+            return Err(ContractError::Blacklisted);
+        }
+
+        let whitelist_only: bool = env.storage().instance().get(&DataKey::WhitelistOnly).unwrap_or(false);
+        if whitelist_only && !env.storage().persistent().get::<_, bool>(&DataKey::Whitelist(delegator.clone())).unwrap_or(false) {
+            return Err(ContractError::NotWhitelisted);
+        }
+
+        token::Client::new(&env, &token)
+            .transfer(&delegate, &env.current_contract_address(), &amount);
+
+        let key = DataKey::Contribution(delegator.clone());
+        let prev: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        let new_amount = prev.checked_add(amount).ok_or(ContractError::Overflow)?;
+        env.storage().persistent().set(&key, &new_amount);
+        env.storage().persistent().extend_ttl(&key, 100, 100);
+
+        env.storage().persistent().set(&delegated_key, &(delegated_so_far + amount));
+        env.storage().persistent().extend_ttl(&delegated_key, 100, 100);
+
+        let total: i128 = env.storage().instance().get(&KEY_TOTAL).unwrap();
+        let new_total = total.checked_add(amount).ok_or(ContractError::Overflow)?;
+        env.storage().instance().set(&KEY_TOTAL, &new_total);
+
+        let presence_key = DataKey::ContributorPresence(delegator.clone());
+        let is_present: bool = env.storage().persistent().get(&presence_key).unwrap_or(false);
+        if !is_present {
+            env.storage().persistent().set(&presence_key, &true);
+            env.storage().persistent().extend_ttl(&presence_key, 100, 100);
+            let count: u32 = env.storage().instance().get(&DataKey::ContributorCount).unwrap();
+            env.storage().instance().set(&DataKey::ContributorCount, &(count + 1));
+        }
+
+        env.events().publish(("campaign", "delegated_contribution"), (delegator, delegate, amount));
+        Ok(())
+    }
+
+    /// Revokes a delegation (delegator must authorize).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `delegator` - The delegator address (must authorize)
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    pub fn revoke_delegation(env: Env, delegator: Address) -> Result<(), ContractError> {
+        delegator.require_auth();
+
+        let mut delegation: Delegation = env.storage()
+            .persistent()
+            .get(&DataKey::Delegation(delegator.clone()))
+            .ok_or(ContractError::DelegationNotFound)?;
+
+        delegation.active = false;
+        env.storage().persistent().set(&DataKey::Delegation(delegator.clone()), &delegation);
+        env.events().publish(("campaign", "delegation_revoked"), delegator);
+        Ok(())
+    }
+
+    /// Gets delegation info for an address.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `delegator` - The delegator address
+    ///
+    /// # Returns
+    /// Optional Delegation info
+    pub fn get_delegation(env: Env, delegator: Address) -> Option<Delegation> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Delegation(delegator))
+    }
+
+    // ── Template Functions ────────────────────────────────────────────────────
+
+    /// Sets a campaign template (creator only).
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    /// * `template_type` - The template type
+    /// * `name` - Template name
+    /// * `description` - Template description
+    /// * `suggested_min` - Suggested minimum contribution
+    /// * `goal_multiplier` - Goal multiplier in basis points
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    pub fn set_template(
+        env: Env,
+        template_type: TemplateType,
+        name: String,
+        description: String,
+        suggested_min: i128,
+        goal_multiplier: u32,
+    ) -> Result<(), ContractError> {
+        let creator: Address = env.storage().instance().get(&KEY_CREATOR).unwrap();
+        creator.require_auth();
+
+        let template = CampaignTemplate {
+            template_type,
+            name,
+            description,
+            suggested_min,
+            goal_multiplier,
+        };
+
+        env.storage().instance().set(&DataKey::Template, &template);
+        env.events().publish(("campaign", "template_set"), ());
+        Ok(())
+    }
+
+    /// Gets the campaign template.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// Optional CampaignTemplate
+    pub fn get_template(env: Env) -> Option<CampaignTemplate> {
+        env.storage().instance().get(&DataKey::Template)
     }
 
     // ── View functions ────────────────────────────────────────────────────────

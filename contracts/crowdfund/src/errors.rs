@@ -39,4 +39,27 @@ pub enum ContractError {
     TokenNotAccepted = 13,
     /// Contribution would exceed the per-contributor maximum
     ExceedsMaximum = 14,
-}
+    /// Address is not whitelisted
+    NotWhitelisted = 15,
+    /// Address is blacklisted
+    Blacklisted = 16,
+    /// Invalid delegation
+    InvalidDelegation = 17,
+    /// Delegation not found
+    DelegationNotFound = 18,
+    /// Invalid template
+    InvalidTemplate = 19,
+    /// Voting period has ended
+    VotingEnded = 20,
+    /// Invalid recurring plan
+    InvalidRecurringPlan = 21,
+    /// Refund limit exceeded
+    RefundLimitExceeded = 22,
+    /// Vesting not complete
+    VestingNotComplete = 23,
+    /// Emergency withdrawal locked
+    EmergencyLocked = 24,
+    /// Rate limit exceeded
+    RateLimitExceeded = 25,
+    /// Message too long
+    MessageTooLong = 26,
