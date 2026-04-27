@@ -1,0 +1,88 @@
+name: Canary Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      contract_id:
+        description: 'Contract ID to deploy'
+        required: true
+      new_version:
+        description: 'New version tag'
+        required: true
+      network:
+        description: 'Network (testnet/mainnet)'
+        required: true
+        default: 'testnet'
+
+jobs:
+  canary-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust + WASM target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install Stellar CLI
+        run: |
+          cargo install --locked stellar-cli --features opt
+
+      - name: Configure Stellar identity
+        env:
+          TESTNET_SECRET_KEY: ${{ secrets.TESTNET_SECRET_KEY }}
+          MAINNET_SECRET_KEY: ${{ secrets.MAINNET_SECRET_KEY }}
+        run: |
+          if [ "${{ github.event.inputs.network }}" = "mainnet" ]; then
+            stellar keys add deployer --secret-key "$MAINNET_SECRET_KEY"
+            stellar network add mainnet \
+              --rpc-url https://soroban-mainnet.stellar.org \
+              --network-passphrase "Public Global Stellar Network ; September 2015"
+          else
+            stellar keys add deployer --secret-key "$TESTNET_SECRET_KEY"
+            stellar network add testnet \
+              --rpc-url https://soroban-testnet.stellar.org \
+              --network-passphrase "Test SDF Network ; September 2015"
+          fi
+
+      - name: Run canary deployment
+        run: |
+          ./scripts/canary-deploy.sh \
+            "${{ github.event.inputs.contract_id }}" \
+            "${{ github.event.inputs.new_version }}" \
+            --network "${{ github.event.inputs.network }}"
+
+      - name: Upload canary state
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-state-${{ github.run_id }}
+          path: .canary-state
+          retention-days: 30
+
+      - name: Post deployment status
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            if (fs.existsSync('.canary-state')) {
+              const state = JSON.parse(fs.readFileSync('.canary-state', 'utf8'));
+              const status = `## 🚀 Canary Deployment Status
+
+| Field | Value |
+|-------|-------|
+| Contract | \`${state.contract_id}\` |
+| Version | ${state.new_version} |
+| Canary Contract | \`${state.canary_contract_id}\` |
+| Network | ${state.network} |
+| Status | ${state.status} |
+| Traffic | ${state.canary_percentage}% |
+| Started | ${state.start_time} |`;
+
+              github.rest.repos.createCommitComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: context.sha,
+                body: status
+              });
+            }
