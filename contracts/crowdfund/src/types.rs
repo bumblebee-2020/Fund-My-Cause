@@ -184,6 +184,42 @@ pub struct Delegation {
     pub active: bool,
 }
 
+/// Reward tier for contribution amounts.
+///
+/// Defines a named reward tier that contributors reach based on their total
+/// cumulative contribution.  Tiers should be stored sorted by `min_amount`
+/// in ascending order.
+///
+/// # Example
+/// ```ignore
+/// // Bronze: ≥ 100 stroops, Silver: ≥ 1_000, Gold: ≥ 10_000
+/// ```
+#[derive(Clone, PartialEq, Debug)]
+#[contracttype]
+pub struct RewardTier {
+    /// Minimum cumulative contribution required to qualify (in stroops)
+    pub min_amount: i128,
+    /// Short display name for the tier (e.g. "Bronze", "Silver", "Gold")
+    pub name: String,
+    /// Human-readable description of what this tier unlocks
+    pub description: String,
+}
+
+/// An immutable record of a single contribution.
+///
+/// Appended to each contributor's persistent history every time they call
+/// [`contribute`](crate::CrowdfundContract::contribute).
+#[derive(Clone)]
+#[contracttype]
+pub struct ContributionRecord {
+    /// Amount transferred in this contribution (in stroops)
+    pub amount: i128,
+    /// Ledger timestamp at the moment the contribution was accepted
+    pub timestamp: u64,
+    /// Contributor's cumulative total after this contribution
+    pub running_total: i128,
+}
+
 /// Storage key variants for contract data.
 ///
 /// Used to organize persistent and instance storage in the contract.
@@ -238,6 +274,12 @@ pub enum DataKey {
     TotalMatched,
     /// Penalty basis points
     PenaltyBps,
+    /// Ordered list of reward tiers configured by the creator
+    RewardTiers,
+    /// Best reward tier currently assigned to a specific contributor
+    ContributorTier(Address),
+    /// Full contribution history for a specific contributor
+    ContributionHistory(Address),
 }
 
 /// Recurring contribution plan.
@@ -599,4 +641,91 @@ pub struct EventInsuranceEnabled {
 pub struct EventInsurancePayout {
     pub contributor: Address,
     pub amount: i128,
+}
+
+// ── Issue #416 ────────────────────────────────────────────────────────────────
+
+/// Emitted when the campaign is cancelled by its creator.
+///
+/// After this event contributors may call `refund_single` or `refund_batch`
+/// to reclaim their tokens regardless of the deadline.
+///
+/// Event topic: `("campaign", "cancelled")`
+#[derive(Clone)]
+#[contracttype]
+pub struct EventCancelled {
+    /// Campaign creator who authorised the cancellation
+    pub creator: Address,
+    /// Total amount held in the contract at the time of cancellation
+    pub total_raised: i128,
+}
+
+// ── Issue #417 ────────────────────────────────────────────────────────────────
+
+/// Emitted when the campaign is paused by the admin.
+///
+/// While paused, new contributions are rejected with `CampaignPaused`.
+///
+/// Event topic: `("campaign", "paused")`
+#[derive(Clone)]
+#[contracttype]
+pub struct EventPaused {
+    /// Ledger timestamp at the moment the campaign was paused
+    pub timestamp: u64,
+}
+
+/// Emitted when a paused campaign is resumed (returned to Active).
+///
+/// Contributions are accepted again immediately after this event.
+///
+/// Event topic: `("campaign", "resumed")`
+#[derive(Clone)]
+#[contracttype]
+pub struct EventResumed {
+    /// Ledger timestamp at the moment the campaign was resumed
+    pub timestamp: u64,
+}
+
+// ── Issue #418 ────────────────────────────────────────────────────────────────
+
+/// Emitted when the creator configures reward tiers for the campaign.
+///
+/// Event topic: `("campaign", "tiers_set")`
+#[derive(Clone)]
+#[contracttype]
+pub struct EventTiersSet {
+    /// Number of tiers configured
+    pub tier_count: u32,
+}
+
+/// Emitted when a contributor reaches a new reward tier.
+///
+/// Event topic: `("campaign", "tier_assigned")`
+#[derive(Clone)]
+#[contracttype]
+pub struct EventTierAssigned {
+    pub contributor: Address,
+    /// Name of the newly reached tier
+    pub tier_name: String,
+    /// Minimum amount threshold of that tier
+    pub min_amount: i128,
+}
+
+// ── Issue #419 ────────────────────────────────────────────────────────────────
+
+/// Emitted when a contribution record is appended to a contributor's history.
+///
+/// Provides a detailed, timestamped audit trail of every individual contribution.
+///
+/// Event topic: `("campaign", "contribution_recorded")`
+#[derive(Clone)]
+#[contracttype]
+pub struct EventContributionRecorded {
+    pub contributor: Address,
+    /// Amount of this specific contribution
+    pub amount: i128,
+    /// Ledger timestamp when the contribution was recorded
+    pub timestamp: u64,
+    /// Contributor's cumulative total after this contribution
+    pub running_total: i128,
 }

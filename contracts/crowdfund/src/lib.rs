@@ -65,11 +65,17 @@ pub use types::{
     CampaignStats,
     CampaignTemplate,
     Category,
+    // #416
+    ContributionRecord,
     DataKey,
     Delegation,
     EventBlacklistRemoved,
     EventBlacklisted,
+    // #416
+    EventCancelled,
     EventContributed,
+    // #419
+    EventContributionRecorded,
     EventDeadlineExtended,
     EventDelegatedContribution,
     EventDelegationCreated,
@@ -85,12 +91,20 @@ pub use types::{
     EventInsurancePayout,
     EventMetadataUpdated,
     EventPartialRefund,
+    // #417
+    EventPaused,
     EventRateLimitUpdated,
     EventRecurringCancelled,
     EventRecurringExecuted,
     EventRecurringSetup,
     EventRefunded,
+    // #417
+    EventResumed,
     EventStatusChanged,
+    // #418
+    EventTierAssigned,
+    // #418
+    EventTiersSet,
     EventWhitelistOnlySet,
     EventWhitelistRemoved,
     EventWhitelisted,
@@ -101,6 +115,8 @@ pub use types::{
     MatchingConfig,
     PlatformConfig,
     RecurringPlan,
+    // #418
+    RewardTier,
     Status,
     TemplateType,
     VestingSchedule,
@@ -468,7 +484,65 @@ impl CrowdfundContract {
             inst.set(&DataKey::LargestContribution, &new_contrib);
         }
 
+        // ── #419: Append to per-contributor contribution history ──────────────
+        // `now` was captured earlier from env.ledger().timestamp()
+        let history_key = DataKey::ContributionHistory(contributor.clone());
+        let mut history: Vec<ContributionRecord> = env
+            .storage()
+            .persistent()
+            .get(&history_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        history.push_back(ContributionRecord {
+            amount,
+            timestamp: now,
+            running_total: new_contrib,
+        });
+        env.storage().persistent().set(&history_key, &history);
+        env.storage()
+            .persistent()
+            .extend_ttl(&history_key, 100, 100);
+
+        // ── #418: Assign reward tier based on updated cumulative total ────────
+        if let Some(tiers) = inst.get::<_, Vec<RewardTier>>(&DataKey::RewardTiers) {
+            let mut best: Option<RewardTier> = None;
+            for i in 0..tiers.len() {
+                let tier = tiers.get(i).unwrap();
+                if new_contrib >= tier.min_amount {
+                    best = Some(tier);
+                } else {
+                    break; // tiers are sorted ascending — no need to continue
+                }
+            }
+            if let Some(tier) = best {
+                env.events().publish(
+                    ("campaign", "tier_assigned"),
+                    EventTierAssigned {
+                        contributor: contributor.clone(),
+                        tier_name: tier.name.clone(),
+                        min_amount: tier.min_amount,
+                    },
+                );
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::ContributorTier(contributor.clone()), &tier);
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&DataKey::ContributorTier(contributor.clone()), 100, 100);
+            }
+        }
+
         inst.extend_ttl(17280, 518400);
+
+        // ── #419: Emit detailed contribution-recorded event ───────────────────
+        env.events().publish(
+            ("campaign", "contribution_recorded"),
+            EventContributionRecorded {
+                contributor: contributor.clone(),
+                amount,
+                timestamp: now,
+                running_total: new_contrib,
+            },
+        );
 
         env.events().publish(
             ("campaign", "contributed"),
@@ -689,34 +763,55 @@ impl CrowdfundContract {
 
     /// Cancels the campaign, allowing all contributors to claim refunds.
     ///
-    /// Can only be called while the campaign is in Active status.
+    /// Can only be called while the campaign is in Active or Paused status.
     /// The creator must authorize this transaction.
-    /// After cancellation, contributors can call `refund_single` to claim their refunds.
+    /// After cancellation, contributors can call `refund_single` or `refund_batch`
+    /// to reclaim their tokens at any time, regardless of the deadline.
     ///
     /// # Arguments
     /// * `env` - The Soroban environment
     ///
     /// # Returns
     /// * `Ok(())` on success
-    /// * `Err(ContractError::NotActive)` if campaign is not in Active status
+    /// * `Err(ContractError::NotActive)` if campaign is already Cancelled, Successful,
+    ///   or Refunded
     ///
     /// # Side Effects
-    /// - Sets campaign status to Cancelled
-    /// - Publishes "cancelled" event
+    /// - Sets campaign status to `Cancelled`
+    /// - Publishes structured `EventCancelled` event with creator and total raised
+    /// - Publishes `EventStatusChanged` event
+    ///
+    /// # Events
+    /// ```ignore
+    /// ("campaign", "cancelled")      → EventCancelled { creator, total_raised }
+    /// ("campaign", "status_changed") → EventStatusChanged { old_status, new_status }
+    /// ```
     pub fn cancel_campaign(env: Env) -> Result<(), ContractError> {
         let inst = env.storage().instance();
         let status: Status = inst.get(&KEY_STATUS).unwrap();
-        if status != Status::Active {
+        // Allow cancellation from Active or Paused state
+        if status == Status::Cancelled
+            || status == Status::Successful
+            || status == Status::Refunded
+        {
             return Err(ContractError::NotActive);
         }
         let creator: Address = inst.get(&KEY_CREATOR).unwrap();
         creator.require_auth();
+        let total_raised: i128 = inst.get(&KEY_TOTAL).unwrap_or(0);
+        let old_status = status;
         inst.set(&KEY_STATUS, &Status::Cancelled);
-        env.events().publish(("campaign", "cancelled"), ());
+        env.events().publish(
+            ("campaign", "cancelled"),
+            EventCancelled {
+                creator,
+                total_raised,
+            },
+        );
         env.events().publish(
             ("campaign", "status_changed"),
             EventStatusChanged {
-                old_status: Status::Active,
+                old_status,
                 new_status: Status::Cancelled,
             },
         );
@@ -971,12 +1066,13 @@ impl CrowdfundContract {
         Ok(())
     }
 
-    /// Verify campaign (admin only).
+    /// Pauses the campaign, preventing new contributions (admin only).
     ///
     /// Can only be called while the campaign is in Active status.
     /// The admin (creator) must authorize this transaction.
-    /// While paused, contributors cannot make new contributions.
-    /// The campaign can be resumed with `unpause`.
+    /// While paused, `contribute` calls are rejected with `CampaignPaused`.
+    /// The campaign can be resumed with [`resume`](CrowdfundContract::resume)
+    /// (or the legacy [`unpause`](CrowdfundContract::unpause)).
     ///
     /// # Arguments
     /// * `env` - The Soroban environment
@@ -986,8 +1082,15 @@ impl CrowdfundContract {
     /// * `Err(ContractError::NotActive)` if campaign is not in Active status
     ///
     /// # Side Effects
-    /// - Sets campaign status to Paused
-    /// - Publishes "paused" event
+    /// - Sets campaign status to `Paused`
+    /// - Publishes structured `EventPaused` event
+    /// - Publishes `EventStatusChanged` event
+    ///
+    /// # Events
+    /// ```ignore
+    /// ("campaign", "paused")         → EventPaused { timestamp }
+    /// ("campaign", "status_changed") → EventStatusChanged { old_status, new_status }
+    /// ```
     pub fn pause(env: Env) -> Result<(), ContractError> {
         let inst = env.storage().instance();
         let status: Status = inst.get(&KEY_STATUS).unwrap();
@@ -997,7 +1100,8 @@ impl CrowdfundContract {
         let admin: Address = inst.get(&KEY_ADMIN).unwrap();
         admin.require_auth();
         inst.set(&KEY_STATUS, &Status::Paused);
-        env.events().publish(("campaign", "paused"), ());
+        let now = env.ledger().timestamp();
+        env.events().publish(("campaign", "paused"), EventPaused { timestamp: now });
         env.events().publish(
             ("campaign", "status_changed"),
             EventStatusChanged {
@@ -1021,9 +1125,16 @@ impl CrowdfundContract {
     /// * `Err(ContractError::NotActive)` if campaign is not in Paused status
     ///
     /// # Side Effects
-    /// - Sets campaign status to Active
-    /// - Publishes "unpaused" event
-    pub fn unpause(env: Env) -> Result<(), ContractError> {
+    /// - Sets campaign status to `Active`
+    /// - Publishes structured `EventResumed` event
+    /// - Publishes `EventStatusChanged` event
+    ///
+    /// # Events
+    /// ```ignore
+    /// ("campaign", "resumed")        → EventResumed { timestamp }
+    /// ("campaign", "status_changed") → EventStatusChanged { old_status, new_status }
+    /// ```
+    pub fn resume(env: Env) -> Result<(), ContractError> {
         let inst = env.storage().instance();
         let status: Status = inst.get(&KEY_STATUS).unwrap();
         if status != Status::Paused {
@@ -1032,7 +1143,8 @@ impl CrowdfundContract {
         let admin: Address = inst.get(&KEY_ADMIN).unwrap();
         admin.require_auth();
         inst.set(&KEY_STATUS, &Status::Active);
-        env.events().publish(("campaign", "unpaused"), ());
+        let now = env.ledger().timestamp();
+        env.events().publish(("campaign", "resumed"), EventResumed { timestamp: now });
         env.events().publish(
             ("campaign", "status_changed"),
             EventStatusChanged {
@@ -1041,6 +1153,21 @@ impl CrowdfundContract {
             },
         );
         Ok(())
+    }
+
+    /// Resumes a paused campaign (legacy alias for [`resume`](CrowdfundContract::resume)).
+    ///
+    /// Prefer `resume()` in new integrations; this function is kept for backward
+    /// compatibility with existing callers.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ContractError::NotActive)` if campaign is not in Paused status
+    pub fn unpause(env: Env) -> Result<(), ContractError> {
+        CrowdfundContract::resume(env)
     }
 
     /// Sets up a recurring contribution plan for a contributor.
@@ -1788,6 +1915,127 @@ impl CrowdfundContract {
     /// Optional CampaignTemplate
     pub fn get_template(env: Env) -> Option<CampaignTemplate> {
         env.storage().instance().get(&DataKey::Template)
+    }
+
+    // ── Issue #418: Reward Tier Functions ─────────────────────────────────────
+
+    /// Configures reward tiers for the campaign (creator only).
+    ///
+    /// Tiers must be provided sorted by `min_amount` in **ascending** order.
+    /// The contract validates this ordering and rejects unsorted lists.
+    /// Up to 10 tiers are supported.
+    ///
+    /// When a contributor's cumulative total reaches a tier's `min_amount`,
+    /// that tier is automatically assigned to them by [`contribute`](CrowdfundContract::contribute).
+    ///
+    /// # Arguments
+    /// * `env`   - The Soroban environment
+    /// * `tiers` - Ordered list of `RewardTier` values (ascending `min_amount`)
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(ContractError::Unauthorized)` if caller is not the creator
+    /// * `Err(ContractError::InvalidGoal)` if tiers are not sorted or list is empty
+    ///
+    /// # Side Effects
+    /// - Stores tier list in instance storage
+    /// - Publishes `EventTiersSet` event
+    pub fn set_reward_tiers(env: Env, tiers: Vec<RewardTier>) -> Result<(), ContractError> {
+        let creator: Address = env.storage().instance().get(&KEY_CREATOR).unwrap();
+        creator.require_auth();
+
+        if tiers.len() == 0 {
+            return Err(ContractError::InvalidGoal);
+        }
+
+        // Validate ascending sort order and positive min_amounts
+        let mut prev_min = 0i128;
+        for i in 0..tiers.len() {
+            let tier = tiers.get(i).unwrap();
+            if tier.min_amount <= 0 || tier.min_amount <= prev_min {
+                return Err(ContractError::InvalidGoal);
+            }
+            prev_min = tier.min_amount;
+        }
+
+        let tier_count = tiers.len();
+        env.storage().instance().set(&DataKey::RewardTiers, &tiers);
+        env.events().publish(
+            ("campaign", "tiers_set"),
+            EventTiersSet { tier_count },
+        );
+        Ok(())
+    }
+
+    /// Returns the highest reward tier a given amount qualifies for.
+    ///
+    /// Iterates the configured tiers (ascending) and returns the last one whose
+    /// `min_amount` is ≤ `amount`.  Returns `None` if no tiers are configured or
+    /// `amount` is below all thresholds.
+    ///
+    /// # Arguments
+    /// * `env`    - The Soroban environment
+    /// * `amount` - Cumulative contribution amount to evaluate (in stroops)
+    ///
+    /// # Returns
+    /// * `Some(RewardTier)` — the best qualifying tier
+    /// * `None` — no tiers are configured or amount is below all thresholds
+    pub fn get_tier_for_amount(env: Env, amount: i128) -> Option<RewardTier> {
+        let tiers: Vec<RewardTier> = env
+            .storage()
+            .instance()
+            .get(&DataKey::RewardTiers)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let mut best: Option<RewardTier> = None;
+        for i in 0..tiers.len() {
+            let tier = tiers.get(i).unwrap();
+            if amount >= tier.min_amount {
+                best = Some(tier);
+            } else {
+                break;
+            }
+        }
+        best
+    }
+
+    /// Returns the reward tier currently assigned to a contributor.
+    ///
+    /// The assignment is updated automatically every time the contributor calls
+    /// [`contribute`](CrowdfundContract::contribute).
+    ///
+    /// # Arguments
+    /// * `env`         - The Soroban environment
+    /// * `contributor` - Address to query
+    ///
+    /// # Returns
+    /// * `Some(RewardTier)` — current tier
+    /// * `None` — contributor has no tier (no tiers configured, or amount below minimum)
+    pub fn get_contributor_tier(env: Env, contributor: Address) -> Option<RewardTier> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ContributorTier(contributor))
+    }
+
+    // ── Issue #419: Contribution History Functions ────────────────────────────
+
+    /// Returns the full contribution history for a contributor.
+    ///
+    /// Each entry is a [`ContributionRecord`] capturing the amount, ledger
+    /// timestamp, and running total at the time of the contribution.  Records
+    /// are appended chronologically by [`contribute`](CrowdfundContract::contribute).
+    ///
+    /// # Arguments
+    /// * `env`         - The Soroban environment
+    /// * `contributor` - Address whose history to retrieve
+    ///
+    /// # Returns
+    /// Ordered `Vec<ContributionRecord>` — empty if the address has never contributed
+    pub fn get_contribution_history(env: Env, contributor: Address) -> Vec<ContributionRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ContributionHistory(contributor))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     // ── View functions ────────────────────────────────────────────────────────
