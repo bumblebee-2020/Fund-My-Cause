@@ -3,7 +3,7 @@
 import React from "react";
 import Image from "next/image";
 import { motion } from "framer-motion";
-import { Bookmark, GitCompare } from "lucide-react";
+import { Bookmark, GitCompare, Share2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { CountdownTimer } from "@/components/ui/CountdownTimer";
@@ -15,6 +15,7 @@ import { useBookmarks } from "@/context/BookmarkContext";
 export interface CampaignCardProps {
   campaign: Campaign;
   onPledge?: (id: string) => void;
+  onShare?: (id: string, title: string) => void;
   /** Pass null when price fetch failed — USD amounts are hidden */
   xlmPrice?: number | null;
   /** Stagger index for slide-up animation on listing page */
@@ -66,6 +67,7 @@ function StatusBadge({ status }: { status: "funded" | "ended" }) {
 export function CampaignCard({
   campaign,
   onPledge,
+  onShare,
   xlmPrice = null,
   index = 0,
   query,
@@ -110,23 +112,37 @@ export function CampaignCard({
             ▶ Video
           </span>
         )}
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            toggleBookmark(campaign.id);
-          }}
-          aria-label={bookmarked ? "Remove bookmark" : "Bookmark campaign"}
-          className="absolute top-3 right-3 p-1.5 rounded-full bg-[var(--color-surface)]/80 hover:bg-[var(--color-surface-elevated)] transition"
-        >
-          <Bookmark
-            size={15}
-            className={cn(
-              bookmarked
-                ? "fill-[var(--color-brand)] text-[var(--color-brand)]"
-                : "text-[var(--color-text-muted)]",
-            )}
-          />
-        </button>
+        <div className="absolute top-3 right-3 flex gap-1">
+          {onShare && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onShare(campaign.id, campaign.title);
+              }}
+              aria-label="Share campaign"
+              className="p-1.5 rounded-full bg-[var(--color-surface)]/80 hover:bg-[var(--color-surface-elevated)] transition"
+            >
+              <Share2 size={15} className="text-[var(--color-text-muted)]" />
+            </button>
+          )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleBookmark(campaign.id);
+            }}
+            aria-label={bookmarked ? "Remove bookmark" : "Bookmark campaign"}
+            className="p-1.5 rounded-full bg-[var(--color-surface)]/80 hover:bg-[var(--color-surface-elevated)] transition"
+          >
+            <Bookmark
+              size={15}
+              className={cn(
+                bookmarked
+                  ? "fill-[var(--color-brand)] text-[var(--color-brand)]"
+                  : "text-[var(--color-text-muted)]",
+              )}
+            />
+          </button>
+        </div>
       </div>
 
       <div className="p-5 space-y-3">
