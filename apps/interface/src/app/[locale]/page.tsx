@@ -1,9 +1,7 @@
 import React from "react";
-import Image from "next/image";
 import Link from "next/link";
 import { Navbar } from "@/components/layout/Navbar";
 import { ProgressBar } from "@/components/ui/ProgressBar";
-import { CountdownTimer } from "@/components/ui/CountdownTimer";
 import { RecommendedSection } from "@/components/ui/RecommendedSection";
 import { Rocket, Users, Coins, ArrowRight, PlusCircle } from "lucide-react";
 import { formatTimeLeft } from "@/lib/format";
@@ -64,13 +62,24 @@ export default function Home() {
   ];
 
   const HOW_IT_WORKS = [
-    { step: 1, title: t("steps.createTitle"), description: t("steps.createDesc") },
+    {
+      step: 1,
+      title: t("steps.createTitle"),
+      description: t("steps.createDesc"),
+    },
     { step: 2, title: t("steps.fundTitle"), description: t("steps.fundDesc") },
-    { step: 3, title: t("steps.withdrawTitle"), description: t("steps.withdrawDesc") },
+    {
+      step: 3,
+      title: t("steps.withdrawTitle"),
+      description: t("steps.withdrawDesc"),
+    },
   ];
 
   return (
-    <main className="min-h-screen bg-gray-950 text-white flex flex-col">
+    <main
+      id="main-content"
+      className="min-h-screen bg-gray-950 text-white flex flex-col"
+    >
       <Navbar />
 
       {/* ── Hero ── */}
@@ -128,7 +137,9 @@ export default function Home() {
           {FEATURED.map((c) => {
             const progress = (c.raised / c.goal) * 100;
             const isFunded = progress >= 100;
-            const deadlineSecs = Math.floor(new Date(c.deadline).getTime() / 1000);
+            const deadlineSecs = Math.floor(
+              new Date(c.deadline).getTime() / 1000,
+            );
             return (
               <div
                 key={c.id}
@@ -139,15 +150,22 @@ export default function Home() {
                     <span aria-hidden="true">⭐</span> {t("featured")}
                   </span>
                 )}
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={c.image} alt={c.title} className="w-full h-48 object-cover" />
+                <img
+                  src={c.image}
+                  alt={c.title}
+                  className="w-full h-48 object-cover"
+                />
                 <div className="p-5 space-y-3">
                   <h3 className="text-base font-semibold">{c.title}</h3>
                   <p className="text-gray-400 text-sm">{c.description}</p>
                   <ProgressBar progress={progress} />
                   <div className="flex justify-between text-sm text-gray-400">
-                    <span>{t("raised", { amount: c.raised.toLocaleString() })}</span>
-                    <span>{t("goal", { amount: c.goal.toLocaleString() })}</span>
+                    <span>
+                      {t("raised", { amount: c.raised.toLocaleString() })}
+                    </span>
+                    <span>
+                      {t("goal", { amount: c.goal.toLocaleString() })}
+                    </span>
                   </div>
                   <p className="text-xs text-gray-500">
                     {t("timeLeft", { time: formatTimeLeft(deadlineSecs) })}
@@ -193,11 +211,24 @@ export default function Home() {
             <Rocket size={16} className="text-indigo-400" /> Fund-My-Cause
           </div>
           <div className="flex gap-5">
-            <Link href="/campaigns" className="hover:text-white transition">{t("footer.campaigns")}</Link>
-            <Link href="/create" className="hover:text-white transition">{t("footer.create")}</Link>
-            <Link href="/dashboard" className="hover:text-white transition">{t("footer.dashboard")}</Link>
-            <Link href="/bookmarks" className="hover:text-white transition">{t("footer.bookmarks")}</Link>
-            <a href="https://developers.stellar.org" target="_blank" rel="noreferrer" className="hover:text-white transition">
+            <Link href="/campaigns" className="hover:text-white transition">
+              {t("footer.campaigns")}
+            </Link>
+            <Link href="/create" className="hover:text-white transition">
+              {t("footer.create")}
+            </Link>
+            <Link href="/dashboard" className="hover:text-white transition">
+              {t("footer.dashboard")}
+            </Link>
+            <Link href="/bookmarks" className="hover:text-white transition">
+              {t("footer.bookmarks")}
+            </Link>
+            <a
+              href="https://developers.stellar.org"
+              target="_blank"
+              rel="noreferrer"
+              className="hover:text-white transition"
+            >
               {t("footer.stellarDocs")}
             </a>
           </div>

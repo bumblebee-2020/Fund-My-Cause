@@ -4,12 +4,12 @@ import { WalletProvider } from "@/context/WalletContext";
 import { ToastProvider } from "@/components/ui/Toast";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { NotificationProvider } from "@/context/NotificationContext";
-import { ReactQueryProvider } from "@/context/ReactQueryProvider";
-import { PageTransition } from "@/components/layout/PageTransition";
 import { ComparisonProvider } from "@/context/ComparisonContext";
 import { BookmarkProvider } from "@/context/BookmarkContext";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ErrorHandlerInitializer } from "@/components/ErrorHandlerInitializer";
+import { ModalProvider } from "@/context/ModalContext";
+import { SkipNav } from "@/components/ui/SkipNav";
 import { NextIntlClientProvider } from "next-intl";
 import { getMessages } from "next-intl/server";
 import { rtlLocales, type Locale } from "@/i18n/config";
@@ -40,19 +40,22 @@ export default async function LocaleLayout({
   return (
     <html lang={locale} dir={dir} className="dark">
       <body>
+        <SkipNav />
         <ErrorBoundary level="page">
           <ErrorHandlerInitializer />
           <NextIntlClientProvider messages={messages}>
             <ThemeProvider>
-              <ToastProvider>
-                <NotificationProvider>
-                  <ComparisonProvider>
-                    <BookmarkProvider>
-                      <WalletProvider>{children}</WalletProvider>
-                    </BookmarkProvider>
-                  </ComparisonProvider>
-                </NotificationProvider>
-              </ToastProvider>
+              <ModalProvider>
+                <ToastProvider>
+                  <NotificationProvider>
+                    <ComparisonProvider>
+                      <BookmarkProvider>
+                        <WalletProvider>{children}</WalletProvider>
+                      </BookmarkProvider>
+                    </ComparisonProvider>
+                  </NotificationProvider>
+                </ToastProvider>
+              </ModalProvider>
             </ThemeProvider>
           </NextIntlClientProvider>
         </ErrorBoundary>
