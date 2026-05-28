@@ -7,9 +7,11 @@ import React, {
   useCallback,
   ReactNode,
 } from "react";
-import { X, CheckCircle, AlertCircle, Info } from "lucide-react";
+import { X, CheckCircle, AlertCircle, Info, AlertTriangle } from "lucide-react";
 
-export type ToastType = "success" | "error" | "info";
+export type ToastType = "success" | "error" | "info" | "warning";
+
+const TOAST_MAX = 5;
 
 export interface Toast {
   id: string;
@@ -32,9 +34,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const addToast = useCallback(
     (message: string, type: ToastType, txHash?: string) => {
       const id = Math.random().toString(36).substring(2, 9);
-      setToasts((prev) => [...prev, { id, message, type, txHash }]);
+      setToasts((prev) => {
+        const next = [...prev, { id, message, type, txHash }];
+        return next.length > TOAST_MAX
+          ? next.slice(next.length - TOAST_MAX)
+          : next;
+      });
 
-      // Auto-dismiss success/info after 5 seconds
+      // Auto-dismiss success/info/warning after 5 seconds
       if (type !== "error") {
         setTimeout(() => {
           setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -94,12 +101,14 @@ function ToastItem({ toast, onClose }: { toast: Toast; onClose: () => void }) {
     success: <CheckCircle className="text-green-400" size={20} />,
     error: <AlertCircle className="text-red-400" size={20} />,
     info: <Info className="text-blue-400" size={20} />,
+    warning: <AlertTriangle className="text-yellow-400" size={20} />,
   };
 
   const borders = {
     success: "border-green-400/30",
     error: "border-red-400/30",
     info: "border-blue-400/30",
+    warning: "border-yellow-400/30",
   };
 
   return (

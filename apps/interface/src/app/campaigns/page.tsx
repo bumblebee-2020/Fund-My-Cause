@@ -6,17 +6,21 @@ import Link from "next/link";
 import { Navbar } from "@/components/layout/Navbar";
 import { CampaignCard } from "@/components/ui/CampaignCard";
 import { PledgeModal } from "@/components/ui/PledgeModal";
-import { EmptyState, NoCampaignsIllustration } from "@/components/ui/EmptyState";
+import {
+  EmptyState,
+  NoCampaignsIllustration,
+} from "@/components/ui/EmptyState";
 import { LoadingSkeletonGrid } from "@/components/ui/LoadingSkeleton";
 import { Campaign } from "@/types/campaign";
 import { ALL_CAMPAIGNS } from "@/lib/campaigns";
-import { Search, GitCompare } from "lucide-react";
+import { Search, GitCompare, SlidersHorizontal, X } from "lucide-react";
 import { useComparison } from "@/context/ComparisonContext";
+import { Pagination } from "@/components/ui/Pagination";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type FilterTab = "all" | "active" | "funded" | "ended";
-type SortOption = "newest" | "most-funded" | "ending-soon";
+type SortOption = "recent" | "popular" | "deadline" | "progress";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -35,7 +39,8 @@ function applyFilter(campaigns: Campaign[], filter: FilterTab): Campaign[] {
 function applySort(campaigns: Campaign[], sort: SortOption): Campaign[] {
   return [...campaigns].sort((a, b) => {
     if (sort === "most-funded") return b.raised / b.goal - a.raised / a.goal;
-    if (sort === "ending-soon") return new Date(a.deadline).getTime() - new Date(b.deadline).getTime();
+    if (sort === "ending-soon")
+      return new Date(a.deadline).getTime() - new Date(b.deadline).getTime();
     return Number(b.id) - Number(a.id);
   });
 }
@@ -47,7 +52,7 @@ const FILTER_TABS: { label: string; value: FilterTab }[] = [
   { label: "Ended", value: "ended" },
 ];
 
-const PAGE_SIZE = 9;
+const PAGE_SIZE_OPTIONS = [9, 18, 36];
 
 // ── Inner component (uses useSearchParams) ────────────────────────────────────
 
@@ -57,16 +62,35 @@ function CampaignsInner() {
   const { selected, clear } = useComparison();
 
   const filter = (searchParams.get("filter") as FilterTab) ?? "all";
-  const sort = (searchParams.get("sort") as SortOption) ?? "newest";
+  const sort = (searchParams.get("sort") as SortOption) ?? "recent";
   const query = searchParams.get("q") ?? "";
+  const category = searchParams.get("category") ?? "";
   const page = Math.max(1, Number(searchParams.get("page") ?? "1"));
 
+  const pageSize = Math.max(
+    1,
+    Number(searchParams.get("pageSize") ?? String(PAGE_SIZE_OPTIONS[0])),
+  );
+
   const [pledge, setPledge] = useState<string | null>(null);
+  const [shareTarget, setShareTarget] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
   const [inputValue, setInputValue] = useState(query);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [goalMin, setGoalMin] = useState(searchParams.get("goalMin") ?? "");
+  const [goalMax, setGoalMax] = useState(searchParams.get("goalMax") ?? "");
+  const [dateFrom, setDateFrom] = useState(searchParams.get("dateFrom") ?? "");
+  const [dateTo, setDateTo] = useState(searchParams.get("dateTo") ?? "");
 
   const setParam = (key: string, value: string) => {
     const params = new URLSearchParams(searchParams.toString());
-    if (value === "" || (key === "filter" && value === "all") || (key === "sort" && value === "newest")) {
+    if (
+      value === "" ||
+      (key === "filter" && value === "all") ||
+      (key === "sort" && value === "newest")
+    ) {
       params.delete(key);
     } else {
       params.set(key, value);
@@ -75,7 +99,9 @@ function CampaignsInner() {
     router.replace(`/campaigns?${params.toString()}`, { scroll: false });
   };
 
-  React.useEffect(() => { setInputValue(query); }, [query]);
+  React.useEffect(() => {
+    setInputValue(query);
+  }, [query]);
 
   React.useEffect(() => {
     const timer = setTimeout(() => setParam("q", inputValue), 300);
@@ -85,34 +111,75 @@ function CampaignsInner() {
 
   const setPage = (p: number) => {
     const params = new URLSearchParams(searchParams.toString());
-    if (p === 1) params.delete("page"); else params.set("page", String(p));
+    if (p === 1) params.delete("page");
+    else params.set("page", String(p));
     router.replace(`/campaigns?${params.toString()}`, { scroll: false });
   };
 
+  const setPageSize = (size: number) => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("pageSize", String(size));
+    params.delete("page");
+    router.replace(`/campaigns?${params.toString()}`, { scroll: false });
+  };
+
+  const activeGoalMin = searchParams.get("goalMin")
+    ? Number(searchParams.get("goalMin"))
+    : null;
+  const activeGoalMax = searchParams.get("goalMax")
+    ? Number(searchParams.get("goalMax"))
+    : null;
+  const activeDateFrom = searchParams.get("dateFrom") ?? null;
+  const activeDateTo = searchParams.get("dateTo") ?? null;
+  const hasAdvanced = !!(
+    activeGoalMin ||
+    activeGoalMax ||
+    activeDateFrom ||
+    activeDateTo
+  );
+
   const filtered = applySort(
     applyFilter(
-      ALL_CAMPAIGNS.filter(
-        (c) =>
-          !query ||
-          c.title.toLowerCase().includes(query.toLowerCase()) ||
-          c.description.toLowerCase().includes(query.toLowerCase()) ||
-          c.creator.toLowerCase().includes(query.toLowerCase()),
-      ),
+      ALL_CAMPAIGNS.filter((c) => {
+        if (query) {
+          const q = query.toLowerCase();
+          if (
+            !c.title.toLowerCase().includes(q) &&
+            !c.description.toLowerCase().includes(q) &&
+            !c.creator.toLowerCase().includes(q)
+          )
+            return false;
+        }
+        if (category && c.category !== category) return false;
+        if (activeGoalMin !== null && c.goal < activeGoalMin) return false;
+        if (activeGoalMax !== null && c.goal > activeGoalMax) return false;
+        if (activeDateFrom && new Date(c.deadline) < new Date(activeDateFrom))
+          return false;
+        if (activeDateTo && new Date(c.deadline) > new Date(activeDateTo))
+          return false;
+        return true;
+      }),
       filter,
     ),
     sort,
   );
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const currentPage = Math.min(page, totalPages);
-  const paginated = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  const paginated = filtered.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize,
+  );
 
   return (
     <>
-      {/* Controls */}
-      <div className="flex flex-col sm:flex-row gap-3 mb-6">
+      {/* Controls row */}
+      <div className="flex flex-col sm:flex-row gap-3 mb-4">
         <div className="relative flex-1">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+          <Search
+            size={16}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+          />
           <input
             type="text"
             placeholder="Search campaigns..."
@@ -122,19 +189,130 @@ function CampaignsInner() {
             className="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl pl-9 pr-4 py-2 text-sm text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-indigo-500"
           />
         </div>
+
+        {/* Category filter */}
+        <select
+          value={category}
+          onChange={(e) => setParam("category", e.target.value)}
+          aria-label="Filter by category"
+          className={selectCls}
+        >
+          <option value="">All Categories</option>
+          {CATEGORIES.map((cat) => (
+            <option key={cat} value={cat}>
+              {cat.charAt(0).toUpperCase() + cat.slice(1)}
+            </option>
+          ))}
+        </select>
+
+        {/* Sort */}
         <select
           value={sort}
           onChange={(e) => setParam("sort", e.target.value)}
-          className="bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500"
+          aria-label="Sort campaigns"
+          className={selectCls}
         >
-          <option value="newest">Newest</option>
-          <option value="most-funded">Most Funded</option>
-          <option value="ending-soon">Ending Soon</option>
+          {SORT_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
         </select>
+
+        {/* Advanced filters toggle */}
+        <button
+          onClick={() => setShowAdvanced((v) => !v)}
+          aria-expanded={showAdvanced}
+          className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium transition border ${
+            hasAdvanced
+              ? "bg-indigo-600 border-indigo-500 text-white"
+              : "bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:border-indigo-500"
+          }`}
+        >
+          <SlidersHorizontal size={14} />
+          Filters{hasAdvanced ? " ●" : ""}
+        </button>
       </div>
 
+      {/* Advanced filter panel */}
+      {showAdvanced && (
+        <div className="mb-4 rounded-2xl border border-gray-700 bg-gray-900 p-5 space-y-4">
+          <h3 className="text-sm font-semibold text-gray-300">
+            Advanced Filters
+          </h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">
+                Min Goal (XLM)
+              </label>
+              <input
+                type="number"
+                min={0}
+                value={goalMin}
+                onChange={(e) => setGoalMin(e.target.value)}
+                placeholder="e.g. 1000"
+                className={inputCls}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">
+                Max Goal (XLM)
+              </label>
+              <input
+                type="number"
+                min={0}
+                value={goalMax}
+                onChange={(e) => setGoalMax(e.target.value)}
+                placeholder="e.g. 50000"
+                className={inputCls}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">
+                Deadline From
+              </label>
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className={inputCls}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-gray-400">
+                Deadline To
+              </label>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                className={inputCls}
+              />
+            </div>
+          </div>
+          <div className="flex gap-2 justify-end">
+            <button
+              onClick={clearAdvanced}
+              className="flex items-center gap-1 px-3 py-1.5 text-xs text-gray-400 hover:text-white transition"
+            >
+              <X size={12} /> Clear
+            </button>
+            <button
+              onClick={applyAdvanced}
+              className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-sm font-medium text-white transition"
+            >
+              Apply
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Filter tabs */}
-      <div className="flex gap-2 mb-8" role="tablist" aria-label="Filter campaigns">
+      <div
+        className="flex gap-2 mb-8"
+        role="tablist"
+        aria-label="Filter campaigns"
+      >
         {FILTER_TABS.map((tab, idx) => (
           <button
             key={tab.value}
@@ -146,11 +324,22 @@ function CampaignsInner() {
               if (e.key === "ArrowRight") {
                 const next = FILTER_TABS[(idx + 1) % FILTER_TABS.length];
                 setParam("filter", next.value);
-                (e.currentTarget.parentElement?.children[(idx + 1) % FILTER_TABS.length] as HTMLElement)?.focus();
+                (
+                  e.currentTarget.parentElement?.children[
+                    (idx + 1) % FILTER_TABS.length
+                  ] as HTMLElement
+                )?.focus();
               } else if (e.key === "ArrowLeft") {
-                const prev = FILTER_TABS[(idx - 1 + FILTER_TABS.length) % FILTER_TABS.length];
+                const prev =
+                  FILTER_TABS[
+                    (idx - 1 + FILTER_TABS.length) % FILTER_TABS.length
+                  ];
                 setParam("filter", prev.value);
-                (e.currentTarget.parentElement?.children[(idx - 1 + FILTER_TABS.length) % FILTER_TABS.length] as HTMLElement)?.focus();
+                (
+                  e.currentTarget.parentElement?.children[
+                    (idx - 1 + FILTER_TABS.length) % FILTER_TABS.length
+                  ] as HTMLElement
+                )?.focus();
               }
             }}
             className={`px-4 py-1.5 rounded-full text-sm font-medium transition ${
@@ -170,51 +359,52 @@ function CampaignsInner() {
           illustration={<NoCampaignsIllustration />}
           title="No campaigns found"
           description="Try adjusting your search or filters to find what you're looking for."
-          action={{ label: "Clear filters", onClick: () => router.replace("/campaigns") }}
+          action={{
+            label: "Clear filters",
+            onClick: () => router.replace("/campaigns"),
+          }}
         />
       ) : (
         <>
-          <p className="text-sm text-gray-500 mb-4">
-            {filtered.length} campaign{filtered.length !== 1 ? "s" : ""} found
-          </p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {paginated.map((campaign, i) => (
               <CampaignCard
                 key={campaign.id}
                 campaign={campaign}
                 onPledge={(id) => setPledge(id)}
+                onShare={(id, title) => setShareTarget({ id, title })}
                 index={i}
                 query={query}
               />
             ))}
           </div>
 
-          {totalPages > 1 && (
-            <div className="flex items-center justify-center gap-4 mt-10">
-              <button
-                onClick={() => setPage(currentPage - 1)}
-                disabled={currentPage === 1}
-                className="px-4 py-2 rounded-xl bg-gray-800 text-sm text-gray-300 hover:bg-gray-700 disabled:opacity-30 transition"
-              >
-                Previous
-              </button>
-              <span className="text-sm text-gray-400">Page {currentPage} of {totalPages}</span>
-              <button
-                onClick={() => setPage(currentPage + 1)}
-                disabled={currentPage === totalPages}
-                className="px-4 py-2 rounded-xl bg-gray-800 text-sm text-gray-300 hover:bg-gray-700 disabled:opacity-30 transition"
-              >
-                Next
-              </button>
-            </div>
-          )}
+          <Pagination
+            currentPage={currentPage}
+            totalPages={totalPages}
+            totalItems={filtered.length}
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+            pageSizeOptions={PAGE_SIZE_OPTIONS}
+          />
         </>
       )}
 
       {pledge && (
         <PledgeModal
-          campaignTitle={ALL_CAMPAIGNS.find((c) => c.id === pledge)?.title ?? pledge}
+          campaignTitle={
+            ALL_CAMPAIGNS.find((c) => c.id === pledge)?.title ?? pledge
+          }
           onClose={() => setPledge(null)}
+        />
+      )}
+
+      {shareTarget && (
+        <ShareModal
+          campaignId={shareTarget.id}
+          campaignTitle={shareTarget.title}
+          onClose={() => setShareTarget(null)}
         />
       )}
 
@@ -222,14 +412,19 @@ function CampaignsInner() {
       {selected.length > 0 && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 bg-gray-900 border border-gray-700 rounded-2xl px-5 py-3 shadow-2xl">
           <GitCompare size={16} className="text-indigo-400" />
-          <span className="text-sm text-gray-300">{selected.length} selected</span>
+          <span className="text-sm text-gray-300">
+            {selected.length} selected
+          </span>
           <Link
             href="/compare"
             className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-sm font-medium transition"
           >
             Compare
           </Link>
-          <button onClick={clear} className="text-gray-500 hover:text-gray-300 text-xs transition">
+          <button
+            onClick={clear}
+            className="text-gray-500 hover:text-gray-300 text-xs transition"
+          >
             Clear
           </button>
         </div>

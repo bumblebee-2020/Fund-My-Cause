@@ -84,4 +84,8 @@ pub enum ContractError {
     ProposalNotFound = 36,
     /// Already voted on proposal
     AlreadyVoted = 37,
+    /// Rewards not configured for this campaign
+    NoRewardsConfigured = 38,
+    /// Caller is not the campaign creator
+    NotCreator = 39,
 }

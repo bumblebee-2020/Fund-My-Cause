@@ -1,7 +1,7 @@
 "use client";
 
-import React, { ReactNode, Component, ErrorInfo } from "react";
-import { AlertCircle } from "lucide-react";
+import React, { ReactNode, Component, ErrorInfo, ComponentType } from "react";
+import { AlertCircle, RefreshCw, WifiOff, Lock } from "lucide-react";
 
 export interface ErrorBoundaryProps {
   children: ReactNode;
@@ -22,7 +22,10 @@ interface ErrorBoundaryState {
  *   <SomeComponent />
  * </ErrorBoundary>
  */
-export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+export class ErrorBoundary extends Component<
+  ErrorBoundaryProps,
+  ErrorBoundaryState
+> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
     this.state = { hasError: false, error: null };
@@ -57,7 +60,13 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
         return this.props.fallback(this.state.error, this.reset);
       }
 
-      return <DefaultErrorFallback error={this.state.error} reset={this.reset} level={this.props.level} />;
+      return (
+        <DefaultErrorFallback
+          error={this.state.error}
+          reset={this.reset}
+          level={this.props.level}
+        />
+      );
     }
 
     return this.props.children;
@@ -73,7 +82,13 @@ interface DefaultErrorFallbackProps {
 /**
  * Default error fallback UI
  */
-function DefaultErrorFallback({ error, reset, level = "component" }: DefaultErrorFallbackProps) {
+function DefaultErrorFallback({
+  error,
+  reset,
+  level = "component",
+}: DefaultErrorFallbackProps) {
+  const { icon, title, description } = getErrorMeta(error);
+
   const containerClasses = {
     page: "min-h-screen flex items-center justify-center p-4",
     section: "p-6 rounded-lg border border-red-200 bg-red-50",
@@ -90,19 +105,21 @@ function DefaultErrorFallback({ error, reset, level = "component" }: DefaultErro
     <div className={containerClasses[level]}>
       <div className="max-w-md w-full">
         <div className="flex items-start gap-3">
-          <AlertCircle className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" />
+          {icon}
           <div className="flex-1">
             <h2 className={`font-semibold text-red-900 ${titleClasses[level]}`}>
-              Something went wrong
+              {title}
             </h2>
             <p className="text-sm text-red-700 mt-2">
               {process.env.NODE_ENV === "development"
                 ? error.message
-                : "An unexpected error occurred. Please try again."}
+                : description}
             </p>
             {process.env.NODE_ENV === "development" && (
               <details className="mt-3 text-xs text-red-600">
-                <summary className="cursor-pointer font-mono">Error details</summary>
+                <summary className="cursor-pointer font-mono">
+                  Error details
+                </summary>
                 <pre className="mt-2 p-2 bg-red-100 rounded overflow-auto max-h-40">
                   {error.stack}
                 </pre>
@@ -110,8 +127,9 @@ function DefaultErrorFallback({ error, reset, level = "component" }: DefaultErro
             )}
             <button
               onClick={reset}
-              className="mt-4 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors text-sm font-medium"
+              className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors text-sm font-medium"
             >
+              <RefreshCw size={14} />
               Try again
             </button>
           </div>
@@ -119,6 +137,73 @@ function DefaultErrorFallback({ error, reset, level = "component" }: DefaultErro
       </div>
     </div>
   );
+}
+
+// ── withErrorBoundary HOC ─────────────────────────────────────────────────────
+
+export function withErrorBoundary<P extends object>(
+  WrappedComponent: ComponentType<P>,
+  boundaryProps?: Omit<ErrorBoundaryProps, "children">,
+) {
+  const displayName =
+    WrappedComponent.displayName ?? WrappedComponent.name ?? "Component";
+  function WithErrorBoundary(props: P) {
+    return (
+      <ErrorBoundary {...boundaryProps}>
+        <WrappedComponent {...props} />
+      </ErrorBoundary>
+    );
+  }
+  WithErrorBoundary.displayName = `withErrorBoundary(${displayName})`;
+  return WithErrorBoundary;
+}
+
+// ── Typed error messages ──────────────────────────────────────────────────────
+
+function getErrorMeta(error: Error): {
+  icon: ReactNode;
+  title: string;
+  description: string;
+} {
+  const msg = error.message.toLowerCase();
+  if (
+    msg.includes("network") ||
+    msg.includes("fetch") ||
+    msg.includes("failed to fetch")
+  ) {
+    return {
+      icon: (
+        <WifiOff className="w-6 h-6 text-yellow-500 flex-shrink-0 mt-0.5" />
+      ),
+      title: "Connection error",
+      description: "Check your internet connection and try again.",
+    };
+  }
+  if (
+    msg.includes("unauthorized") ||
+    msg.includes("403") ||
+    msg.includes("401")
+  ) {
+    return {
+      icon: <Lock className="w-6 h-6 text-orange-500 flex-shrink-0 mt-0.5" />,
+      title: "Access denied",
+      description: "You don't have permission to view this content.",
+    };
+  }
+  if (msg.includes("not found") || msg.includes("404")) {
+    return {
+      icon: (
+        <AlertCircle className="w-6 h-6 text-blue-500 flex-shrink-0 mt-0.5" />
+      ),
+      title: "Not found",
+      description: "The requested resource could not be found.",
+    };
+  }
+  return {
+    icon: <AlertCircle className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" />,
+    title: "Something went wrong",
+    description: "An unexpected error occurred. Please try again.",
+  };
 }
 
 // Extend window interface for error logger
