@@ -5,6 +5,11 @@ members = [
 ]
 exclude = ["contracts/benchmarks"]
 
+[workspace.metadata.docs]
+# Run `cargo doc --workspace --no-deps --document-private-items` to build docs locally.
+# The GitHub Actions workflow `.github/workflows/docs.yml` builds and deploys to GitHub Pages.
+output-dir = "target/doc"
+
 [workspace.dependencies]
 soroban-sdk = "25.3.0"
 insta = { version = "1.37", features = ["redactions"] }

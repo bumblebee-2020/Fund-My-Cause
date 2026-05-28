@@ -1,4 +1,4 @@
-.PHONY: help build-contract test-contract deploy-testnet dev-frontend test-frontend lint install-deps clean format build test
+.PHONY: help build-contract test-contract deploy-testnet dev-frontend test-frontend lint install-deps clean format build test docs docs-open docs-check
 
 # Default target - show help
 help:
@@ -16,6 +16,9 @@ help:
 	@echo "  make install-deps       Install all dependencies"
 	@echo "  make clean              Clean build artifacts"
 	@echo "  make format             Format code (Rust + JavaScript)"
+	@echo "  make docs               Build rustdoc for all contracts"
+	@echo "  make docs-open          Build rustdoc and open in browser"
+	@echo "  make docs-check         Build rustdoc with warnings-as-errors (mirrors CI)"
 	@echo ""
 	@echo "Example workflow:"
 	@echo "  make install-deps       # One-time setup"
@@ -104,3 +107,31 @@ format:
 	cargo fmt --all
 	@echo "Formatting JavaScript/TypeScript code..."
 	cd apps/interface && npm run format 2>/dev/null || npx prettier --write "src/**/*.{ts,tsx,js,jsx}" || true
+
+# ── Documentation ─────────────────────────────────────────────────────────────
+
+# Build rustdoc for all contracts (excludes benchmarks and third-party deps)
+docs:
+	@echo "Building contract documentation..."
+	cargo doc --workspace --exclude benchmarks --no-deps --document-private-items
+	@echo "Docs written to target/doc/"
+	@echo "Entry point: target/doc/crowdfund/index.html"
+
+# Build docs and open in the default browser
+docs-open: docs
+	@echo "Opening docs in browser..."
+	@if command -v xdg-open > /dev/null 2>&1; then \
+		xdg-open target/doc/crowdfund/index.html; \
+	elif command -v open > /dev/null 2>&1; then \
+		open target/doc/crowdfund/index.html; \
+	else \
+		start target/doc/crowdfund/index.html 2>/dev/null || \
+		echo "Open target/doc/crowdfund/index.html in your browser"; \
+	fi
+
+# Build docs with warnings-as-errors — mirrors the CI docs workflow
+docs-check:
+	@echo "Checking contract documentation (warnings as errors)..."
+	RUSTDOCFLAGS="--default-theme=ayu --cfg docsrs -D warnings" \
+		cargo doc --workspace --exclude benchmarks --no-deps --document-private-items
+	@echo "Documentation check passed."

@@ -3,10 +3,22 @@ name = "registry"
 version = "0.1.0"
 edition = "2021"
 publish = false
+description = "Fund-My-Cause registry contract — on-chain campaign discovery for the Stellar/Soroban network"
+documentation = "https://fund-my-cause.github.io/Fund-My-Cause/registry"
+readme = "../../README.md"
+license = "MIT"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 doctest = false
+
+# docs.rs configuration
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = [
+  "--cfg", "docsrs",
+  "--default-theme=ayu",
+]
 
 [dependencies]
 soroban-sdk = { workspace = true }

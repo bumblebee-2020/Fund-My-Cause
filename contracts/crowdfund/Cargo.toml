@@ -3,10 +3,23 @@ name = "crowdfund"
 version = "0.1.0"
 edition = "2021"
 publish = false
+description = "Fund-My-Cause crowdfunding smart contract for the Stellar/Soroban network"
+documentation = "https://fund-my-cause.github.io/Fund-My-Cause/crowdfund"
+readme = "../../README.md"
+license = "MIT"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 doctest = false
+
+# docs.rs configuration — enables all features and sets rustdoc flags
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = [
+  "--cfg", "docsrs",
+  "--document-private-items",
+  "--default-theme=ayu",
+]
 
 [features]
 fuzz = []

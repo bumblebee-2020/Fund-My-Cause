@@ -1,259 +1,380 @@
 # Fund-My-Cause Contract API Reference
 
-Complete reference for the Soroban smart contract powering Fund-My-Cause crowdfunding platform.
+> **Contract Version:** 4  
+> **Network:** Stellar / Soroban  
+> **Rustdoc:** [View generated API docs](https://fund-my-cause.github.io/Fund-My-Cause/crowdfund/)
 
-## Overview
-
-The contract manages decentralized crowdfunding campaigns on the Stellar network. Campaigns accept contributions in XLM or any Stellar token, with automatic fund release or refund based on goal achievement.
-
-**Contract Version:** 3
+Complete reference for both Soroban smart contracts powering Fund-My-Cause.
 
 ---
 
-## Data Types
+## Contracts
 
-### Status
+| Crate | Purpose |
+|-------|---------|
+| [`crowdfund`](#crowdfund-contract) | Per-campaign crowdfunding logic |
+| [`registry`](#registry-contract) | On-chain campaign discovery |
 
+---
+
+## Crowdfund Contract
+
+### Data Types
+
+#### `Status`
 Campaign lifecycle state.
 
 ```rust
 pub enum Status {
-    Active,      // Campaign accepting contributions
+    Active,      // Accepting contributions
     Successful,  // Goal reached, funds withdrawn
-    Refunded,    // Goal not met, contributors refunded
-    Cancelled,   // Creator cancelled campaign
-    Paused,      // Temporarily paused (admin only)
+    Refunded,    // Goal not met, refunds available
+    Cancelled,   // Creator cancelled, refunds available
+    Paused,      // Temporarily paused, no contributions
 }
 ```
 
-### CampaignStats
+#### `Category`
+```rust
+pub enum Category { Charity, Technology, Creative, Event, Personal, Other }
+```
 
-Live campaign statistics.
+#### `Visibility`
+```rust
+pub enum Visibility {
+    Public,    // Listed; anyone may contribute
+    Private,   // Whitelist-only; not listed in discovery
+    Unlisted,  // Anyone may contribute; not listed in discovery
+}
+```
 
+#### `TemplateType`
+```rust
+pub enum TemplateType { Charity, Product, Event, Personal, Custom }
+```
+
+#### `CampaignStats`
 ```rust
 pub struct CampaignStats {
-    pub total_raised: i128,           // Total raised in stroops (1 XLM = 10,000,000 stroops)
-    pub goal: i128,                   // Funding goal in stroops
-    pub progress_bps: u32,            // Progress in basis points (0-10000, where 10000 = 100%)
-    pub contributor_count: u32,       // Number of unique contributors
-    pub average_contribution: i128,   // Average contribution per contributor in stroops
-    pub largest_contribution: i128,   // Largest single contribution in stroops
+    pub total_raised: i128,         // Total raised in stroops
+    pub goal: i128,                 // Funding goal in stroops
+    pub progress_bps: u32,          // Progress 0–10000 (10000 = 100%)
+    pub contributor_count: u32,     // Unique contributors
+    pub average_contribution: i128, // Average contribution in stroops
+    pub largest_contribution: i128, // Largest single contribution
 }
 ```
 
-### CampaignInfo
-
-Complete campaign metadata and state.
-
+#### `CampaignInfo`
 ```rust
 pub struct CampaignInfo {
-    pub creator: Address,             // Campaign creator's Stellar address
-    pub token: Address,               // Primary token address (usually XLM)
-    pub goal: i128,                   // Funding goal in stroops
-    pub deadline: u64,                // Unix timestamp (seconds) when campaign ends
-    pub min_contribution: i128,       // Minimum contribution in stroops
-    pub title: String,                // Campaign title (max 100 chars recommended)
-    pub description: String,          // Campaign description (max 1000 chars recommended)
-    pub status: Status,               // Current campaign status
-    pub has_platform_config: bool,    // Whether platform fee is configured
-    pub platform_fee_bps: u32,        // Platform fee in basis points (0-10000)
-    pub platform_address: Address,    // Address receiving platform fees
+    pub creator: Address,
+    pub token: Address,
+    pub goal: i128,
+    pub deadline: u64,           // Unix timestamp (seconds)
+    pub min_contribution: i128,
+    pub max_contribution: i128,  // 0 = no limit
+    pub title: String,
+    pub description: String,
+    pub status: Status,
+    pub has_platform_config: bool,
+    pub platform_fee_bps: u32,
+    pub platform_address: Address,
+    pub category: Category,
 }
 ```
 
-### PlatformConfig
-
-Optional platform fee configuration.
-
+#### `PlatformConfig`
 ```rust
 pub struct PlatformConfig {
-    pub address: Address,             // Address to receive fees
-    pub fee_bps: u32,                 // Fee in basis points (0-10000, where 10000 = 100%)
+    pub address: Address, // Fee recipient
+    pub fee_bps: u32,     // Fee in basis points (max 10 000)
 }
 ```
 
-### DataKey
-
-Storage key variants for persistent and instance storage.
-
+#### `VestingSchedule`
 ```rust
-pub enum DataKey {
-    Contribution(Address),            // Persistent: individual contribution amount
-    ContributorPresence(Address),     // Persistent: whether address has contributed
-    ContributorCount,                 // Instance: total unique contributors
-    LargestContribution,              // Instance: largest single contribution
-    AcceptedTokens,                   // Instance: whitelist of accepted token addresses
+pub struct VestingSchedule {
+    pub cliff: u64,    // No withdrawal before this Unix timestamp
+    pub duration: u64, // Linear vesting duration in seconds after cliff
+}
+```
+
+#### `RateLimit`
+```rust
+pub struct RateLimit {
+    pub max_amount: i128,    // Max contribution per address per window
+    pub window_seconds: u64, // Window length in seconds
+}
+```
+
+#### `MatchingConfig`
+```rust
+pub struct MatchingConfig {
+    pub sponsor: Address,
+    pub match_ratio: u32, // Basis points (10 000 = 1:1)
+    pub max_match: i128,  // Maximum total matching in stroops
+}
+```
+
+#### `InsuranceConfig`
+```rust
+pub struct InsuranceConfig {
+    pub fee_bps: u32,      // Insurance fee in basis points
+    pub provider: Address, // Insurance provider address
+    pub enabled: bool,
+}
+```
+
+#### `RecurringPlan`
+```rust
+pub struct RecurringPlan {
+    pub amount: i128,       // Amount per interval in stroops
+    pub interval: u64,      // Seconds between contributions
+    pub end_date: u64,      // Unix timestamp to stop
+    pub last_executed: u64, // Timestamp of last execution
+}
+```
+
+#### `RewardTier`
+```rust
+pub struct RewardTier {
+    pub min_amount: i128, // Minimum cumulative contribution to qualify
+    pub name: String,     // e.g. "Bronze", "Silver", "Gold"
+    pub description: String,
+}
+```
+
+#### `RewardConfig`
+```rust
+pub struct RewardConfig {
+    pub reward_token: Address,
+    pub reward_per_unit: i128, // Reward per stroop contributed
+    pub enabled: bool,
+}
+```
+
+#### `ContributionRecord`
+```rust
+pub struct ContributionRecord {
+    pub amount: i128,        // Amount in this contribution
+    pub timestamp: u64,      // Ledger timestamp
+    pub running_total: i128, // Cumulative total after this contribution
+}
+```
+
+#### `PerformanceMetrics`
+```rust
+pub struct PerformanceMetrics {
+    pub success_rate_bps: u32,
+    pub contribution_velocity: i128,  // Stroops per day
+    pub trending: i32,                // Positive = increasing
+    pub milestones_reached: u32,
+    pub total_milestones: u32,
+    pub time_elapsed: u64,
+    pub estimated_time_to_goal: u64,
+    pub average_daily_contribution: i128,
 }
 ```
 
 ---
 
-## Error Codes
+### Error Codes
 
 | Code | Name | Description |
 |------|------|-------------|
-| 1 | `AlreadyInitialized` | Contract already initialized (can only initialize once) |
-| 2 | `CampaignEnded` | Campaign deadline has passed |
-| 3 | `CampaignStillActive` | Campaign is still active (deadline not reached) |
-| 4 | `GoalNotReached` | Funding goal not met (cannot withdraw) |
-| 5 | `GoalReached` | Funding goal already reached (cannot refund) |
-| 6 | `Overflow` | Arithmetic overflow in amount calculation |
-| 7 | `NotActive` | Campaign is not in Active status |
-| 8 | `InvalidFee` | Platform fee exceeds 10000 basis points |
-| 9 | `BelowMinimum` | Contribution below minimum or invalid amount |
-| 10 | `InvalidDeadline` | Deadline is in the past or invalid |
-| 11 | `CampaignPaused` | Campaign is paused (admin action) |
+| 1 | `AlreadyInitialized` | Contract already initialized |
+| 2 | `CampaignEnded` | Deadline has passed |
+| 3 | `CampaignStillActive` | Deadline has not yet passed |
+| 4 | `GoalNotReached` | Funding goal not met |
+| 5 | `GoalReached` | Goal already reached (cannot refund) |
+| 6 | `Overflow` | Arithmetic overflow |
+| 7 | `NotActive` | Campaign not in Active status |
+| 8 | `InvalidFee` | Fee exceeds 10 000 bps |
+| 9 | `BelowMinimum` | Amount below minimum contribution |
+| 10 | `InvalidDeadline` | Deadline is invalid |
+| 11 | `CampaignPaused` | Campaign is paused |
 | 12 | `InvalidGoal` | Goal must be positive |
-| 13 | `TokenNotAccepted` | Token not in accepted tokens whitelist |
+| 13 | `TokenNotAccepted` | Token not in accepted list |
+| 14 | `ExceedsMaximum` | Contribution would exceed per-contributor max |
+| 15 | `NotWhitelisted` | Address not on whitelist |
+| 16 | `Blacklisted` | Address is blacklisted |
+| 17 | `InvalidDelegation` | Invalid delegation parameters |
+| 18 | `DelegationNotFound` | No delegation found for address |
+| 19 | `InvalidTemplate` | Invalid template type |
+| 20 | `VotingEnded` | Voting period has ended |
+| 21 | `InvalidRecurringPlan` | Invalid recurring plan parameters |
+| 22 | `RefundLimitExceeded` | Partial refund exceeds 50% of contribution |
+| 23 | `VestingNotComplete` | Vesting cliff not reached |
+| 24 | `EmergencyLocked` | Emergency withdrawal is locked |
+| 25 | `RateLimitExceeded` | Contribution exceeds rate limit |
+| 26 | `MessageTooLong` | Message exceeds 256 characters |
+| 27 | `StringEmpty` | Required string field is empty |
+| 28 | `StringTooLong` | String exceeds maximum length |
+| 29 | `AmountNotPositive` | Amount must be > 0 |
+| 30 | `SelfFeeAddress` | Platform fee address same as creator |
+| 31 | `GoalOverflow` | Goal too large (would overflow i128) |
+| 32 | `InsufficientFunds` | Insufficient funds in pool |
+| 33 | `Unauthorized` | Caller not authorized |
+| 34 | `InvalidRateLimit` | Invalid rate limit configuration |
+| 35 | `MultiSigNotMet` | Multi-sig approval threshold not met |
+| 36 | `ProposalNotFound` | Extension proposal not found |
+| 37 | `AlreadyVoted` | Address already voted on proposal |
+| 38 | `NoRewardsConfigured` | Rewards not configured |
+| 39 | `NotCreator` | Caller is not the campaign creator |
 
 ---
 
-## State-Changing Functions
+### Public Functions
 
-### initialize
+#### Core Lifecycle
 
-Initialize a new campaign. **Can only be called once per contract.**
+##### `initialize`
 
-**Signature:**
+Creates a new campaign. Can only be called once per contract instance.
+
 ```rust
 pub fn initialize(
     env: Env,
-    creator: Address,
-    token: Address,
-    goal: i128,
-    deadline: u64,
-    min_contribution: i128,
-    title: String,
-    description: String,
+    creator: Address,          // Must authorize; becomes admin
+    token: Address,            // Primary contribution token
+    goal: i128,                // Funding goal in stroops (> 0)
+    deadline: u64,             // Unix timestamp (> current time)
+    min_contribution: i128,    // Minimum per contribution (>= 0)
+    max_contribution: i128,    // Per-contributor cap (0 = no limit)
+    title: String,             // Max 64 chars
+    description: String,       // Max 512 chars
     social_links: Option<Vec<String>>,
     platform_config: Option<PlatformConfig>,
     accepted_tokens: Option<Vec<Address>>,
+    category: Category,
+    vesting: Option<VestingSchedule>,
+    penalty_bps: Option<u32>,
 ) -> Result<(), ContractError>
 ```
 
-**Parameters:**
-- `creator` — Campaign creator's Stellar address (must authorize)
-- `token` — Primary token address (usually XLM contract)
-- `goal` — Funding goal in stroops (must be > 0)
-- `deadline` — Unix timestamp when campaign ends (must be > current time)
-- `min_contribution` — Minimum contribution in stroops (must be ≥ 0)
-- `title` — Campaign title
-- `description` — Campaign description
-- `social_links` — Optional array of social media URLs or image CIDs
-- `platform_config` — Optional fee configuration (fee_bps must be ≤ 10000)
-- `accepted_tokens` — Optional whitelist of token addresses; if omitted, only `token` is accepted
+**Errors:** `AlreadyInitialized`, `InvalidGoal`, `InvalidDeadline`, `InvalidFee`,
+`SelfFeeAddress`, `GoalOverflow`, `StringEmpty`, `StringTooLong`
 
-**Returns:** `Ok(())` on success, error code on failure
+**Events:** `("campaign", "initialized")`
 
-**Events:** Publishes `("campaign", "initialized")`
+**Example:**
+```ignore
+contract.initialize(
+    env, creator, token,
+    1_000_000_000,  // 100 XLM goal
+    1_800_000_000,  // deadline timestamp
+    10_000_000,     // 1 XLM minimum
+    0,              // no per-contributor cap
+    String::from_str(&env, "My Campaign"),
+    String::from_str(&env, "Help us build something great"),
+    None, None, None,
+    Category::Technology,
+    None, None,
+)?;
+```
 
-**Storage:** Instance storage (TTL managed by Soroban)
+##### `contribute`
 
----
+Pledges tokens to the campaign before the deadline.
 
-### contribute
-
-Submit a contribution to the campaign.
-
-**Signature:**
 ```rust
 pub fn contribute(
     env: Env,
-    contributor: Address,
-    amount: i128,
-    token: Address,
+    contributor: Address,   // Must authorize
+    amount: i128,           // >= min_contribution
+    token: Address,         // Must be in accepted tokens
+    message: Option<String>, // Optional memo, max 256 chars
 ) -> Result<(), ContractError>
 ```
 
-**Parameters:**
-- `contributor` — Contributor's Stellar address (must authorize)
-- `amount` — Contribution amount in stroops (must be ≥ min_contribution)
-- `token` — Token address being contributed (must be in accepted tokens)
+**Errors:** `NotActive`, `CampaignPaused`, `CampaignEnded`, `BelowMinimum`,
+`ExceedsMaximum`, `TokenNotAccepted`, `NotWhitelisted`, `Blacklisted`,
+`RateLimitExceeded`, `MessageTooLong`, `Overflow`
 
-**Returns:** `Ok(())` on success, error code on failure
+**Events:** `("campaign", "contributed")`, `("campaign", "contribution_recorded")`,
+optionally `("campaign", "tier_assigned")`, `("campaign", "rate_limit_hit")`
 
-**Preconditions:**
-- Campaign status must be `Active`
-- Current time must be before deadline
-- Amount must be ≥ min_contribution
-- Token must be in accepted tokens list (or equal to default token)
-- Campaign must not be paused
+**Example:**
+```ignore
+// Contribute 5 XLM (50_000_000 stroops)
+contract.contribute(env, contributor, 50_000_000, xlm_token, None)?;
+```
 
-**Events:** Publishes `("campaign", "contributed", (contributor, amount))`
+##### `withdraw`
 
-**Storage:** 
-- Persistent: Updates contributor's total contribution amount
-- Instance: Updates total_raised, contributor_count, largest_contribution
+Creator claims funds after a successful campaign (deadline passed + goal met).
 
----
-
-### withdraw
-
-Creator claims funds after successful campaign.
-
-**Signature:**
 ```rust
 pub fn withdraw(env: Env) -> Result<(), ContractError>
 ```
 
-**Returns:** `Ok(())` on success, error code on failure
+**Errors:** `NotActive`, `CampaignStillActive`, `GoalNotReached`, `VestingNotComplete`
 
-**Preconditions:**
-- Campaign status must be `Active`
-- Current time must be ≥ deadline
-- Total raised must be ≥ goal
-- Caller must be campaign creator (must authorize)
+**Events:** `("campaign", "withdrawn")`
 
-**Behavior:**
-1. Deducts platform fee (if configured) and transfers to platform address
-2. Transfers remaining funds to creator
-3. Sets campaign status to `Successful`
-4. Clears total_raised to 0
+**Platform fee calculation:**
+```
+fee    = total_raised * platform_fee_bps / 10_000
+payout = total_raised - fee
+```
 
-**Events:** Publishes `("campaign", "withdrawn", (creator, total_amount))`
+##### `refund_single`
 
-**Storage:** Instance storage updated
+Contributor reclaims their funds after a failed or cancelled campaign.
 
----
-
-### refund_single
-
-Contributor claims their refund after failed campaign.
-
-**Signature:**
 ```rust
-pub fn refund_single(
+pub fn refund_single(env: Env, contributor: Address) -> Result<(), ContractError>
+```
+
+**Errors:** `GoalReached`, `CampaignStillActive`
+
+**Events:** `("campaign", "refunded")`
+
+##### `refund_batch`
+
+Batch refund for multiple contributors in one transaction.
+
+```rust
+pub fn refund_batch(env: Env, contributors: Vec<Address>) -> Result<(), ContractError>
+```
+
+**Events:** `("campaign", "batch_refund_completed")`
+
+##### `refund_partial`
+
+Contributor withdraws up to 50% of their contribution before the deadline.
+
+```rust
+pub fn refund_partial(
     env: Env,
     contributor: Address,
+    amount: i128,
 ) -> Result<(), ContractError>
 ```
 
-**Parameters:**
-- `contributor` — Contributor's Stellar address (must authorize)
+**Errors:** `RefundLimitExceeded`, `NotActive`, `CampaignEnded`
 
-**Returns:** `Ok(())` on success, error code on failure
+**Events:** `("campaign", "partial_refund")`
 
-**Preconditions:**
-- Either:
-  - Campaign status is `Cancelled`, OR
-  - Current time is ≥ deadline AND total raised < goal
-- Contributor must have a non-zero contribution
+##### `cancel_campaign`
 
-**Behavior:**
-1. Transfers contributor's full contribution back to them
-2. Sets their contribution to 0 (prevents double-refund)
+Creator cancels the campaign; all contributors may then claim refunds.
 
-**Events:** Publishes `("campaign", "refunded", (contributor, amount))`
+```rust
+pub fn cancel_campaign(env: Env) -> Result<(), ContractError>
+```
 
-**Storage:** Persistent storage updated
+**Errors:** `NotActive`, `NotCreator`
 
----
+**Events:** `("campaign", "cancelled")`
 
-### update_metadata
+#### Metadata & Campaign Management
 
-Update campaign title, description, or social links.
+##### `update_metadata`
 
-**Signature:**
+Update title, description, or social links while the campaign is Active.
+
 ```rust
 pub fn update_metadata(
     env: Env,
@@ -263,910 +384,714 @@ pub fn update_metadata(
 ) -> Result<(), ContractError>
 ```
 
-**Parameters:**
-- `title` — New title (optional)
-- `description` — New description (optional)
-- `social_links` — New social links array (optional)
+**Events:** `("campaign", "metadata_updated")`, `("campaign", "metadata_versioned")`
 
-**Returns:** `Ok(())` on success, error code on failure
+##### `extend_deadline`
 
-**Preconditions:**
-- Campaign status must be `Active`
-- Caller must be campaign creator (must authorize)
+Creator directly extends the campaign deadline.
 
-**Events:** Publishes `("campaign", "metadata_updated")`
-
-**Storage:** Instance storage updated
-
----
-
-### extend_deadline
-
-Extend campaign deadline.
-
-**Signature:**
 ```rust
 pub fn extend_deadline(env: Env, new_deadline: u64) -> Result<(), ContractError>
 ```
 
-**Parameters:**
-- `new_deadline` — New Unix timestamp (must be > current deadline)
+**Errors:** `InvalidDeadline` (new must be > current)
 
-**Returns:** `Ok(())` on success, error code on failure
+**Events:** `("campaign", "deadline_extended")`
 
-**Preconditions:**
-- Campaign status must be `Active`
-- Caller must be campaign creator (must authorize)
-- New deadline must be > current deadline
+##### `adjust_goal`
 
-**Events:** Publishes `("campaign", "deadline_extended", new_deadline)`
+Creator adjusts the funding goal. Recorded in audit history.
 
-**Storage:** Instance storage updated
-
----
-
-### cancel_campaign
-
-Creator cancels campaign, allowing all contributors to refund.
-
-**Signature:**
 ```rust
-pub fn cancel_campaign(env: Env) -> Result<(), ContractError>
+pub fn adjust_goal(env: Env, new_goal: i128) -> Result<(), ContractError>
 ```
 
-**Returns:** `Ok(())` on success, error code on failure
+**Events:** `("campaign", "goal_adjusted")`
 
-**Preconditions:**
-- Campaign status must be `Active`
-- Caller must be campaign creator (must authorize)
+##### `update_category`
 
-**Behavior:**
-- Sets campaign status to `Cancelled`
-- Contributors can then call `refund_single` to claim refunds
+Creator updates the campaign category.
 
-**Events:** Publishes `("campaign", "cancelled")`
+```rust
+pub fn update_category(env: Env, new_category: Category) -> Result<(), ContractError>
+```
 
-**Storage:** Instance storage updated
+**Events:** `("campaign", "category_updated")`
 
----
+##### `set_visibility`
 
-### pause
+Creator changes campaign visibility level.
 
-Admin pauses campaign (prevents new contributions).
+```rust
+pub fn set_visibility(env: Env, visibility: Visibility) -> Result<(), ContractError>
+```
 
-**Signature:**
+**Events:** `("campaign", "visibility_changed")`
+
+##### `pause` / `resume` / `unpause`
+
+Pause or resume the campaign (creator only).
+
 ```rust
 pub fn pause(env: Env) -> Result<(), ContractError>
-```
-
-**Returns:** `Ok(())` on success, error code on failure
-
-**Preconditions:**
-- Campaign status must be `Active`
-- Caller must be campaign creator/admin (must authorize)
-
-**Behavior:**
-- Sets campaign status to `Paused`
-- Contributions are blocked until unpaused
-
-**Events:** Publishes `("campaign", "paused")`
-
-**Storage:** Instance storage updated
-
----
-
-### unpause
-
-Admin resumes paused campaign.
-
-**Signature:**
-```rust
+pub fn resume(env: Env) -> Result<(), ContractError>
 pub fn unpause(env: Env) -> Result<(), ContractError>
 ```
 
-**Returns:** `Ok(())` on success, error code on failure
+**Events:** `("campaign", "paused")` / `("campaign", "resumed")`
 
-**Preconditions:**
-- Campaign status must be `Paused`
-- Caller must be campaign creator/admin (must authorize)
+#### Access Control
 
-**Behavior:**
-- Sets campaign status back to `Active`
-- Contributions are allowed again
+##### `add_to_whitelist` / `remove_from_whitelist`
 
-**Events:** Publishes `("campaign", "unpaused")`
+Manage the contributor whitelist (creator only).
 
-**Storage:** Instance storage updated
-
----
-
-## Read-Only Functions
-
-### get_stats
-
-Fetch live campaign statistics.
-
-**Signature:**
 ```rust
-pub fn get_stats(env: Env) -> CampaignStats
+pub fn add_to_whitelist(env: Env, address: Address) -> Result<(), ContractError>
+pub fn remove_from_whitelist(env: Env, address: Address) -> Result<(), ContractError>
 ```
 
-**Returns:** `CampaignStats` struct with current metrics
+**Events:** `("campaign", "whitelisted")` / `("campaign", "whitelist_removed")`
 
-**Storage:** Instance storage (read-only)
+##### `add_to_blacklist` / `remove_from_blacklist`
 
----
+Block or unblock specific addresses (creator only).
 
-### get_campaign_info
-
-Fetch complete campaign metadata and state.
-
-**Signature:**
 ```rust
-pub fn get_campaign_info(env: Env) -> CampaignInfo
+pub fn add_to_blacklist(env: Env, address: Address) -> Result<(), ContractError>
+pub fn remove_from_blacklist(env: Env, address: Address) -> Result<(), ContractError>
 ```
 
-**Returns:** `CampaignInfo` struct with all campaign details
+**Events:** `("campaign", "blacklisted")` / `("campaign", "blacklist_removed")`
 
-**Storage:** Instance storage (read-only)
+##### `set_whitelist_only`
 
----
+Toggle whitelist-only contribution mode.
 
-### total_raised
-
-Get total amount raised so far.
-
-**Signature:**
 ```rust
-pub fn total_raised(env: Env) -> i128
+pub fn set_whitelist_only(env: Env, enabled: bool) -> Result<(), ContractError>
 ```
 
-**Returns:** Total raised in stroops
+**Events:** `("campaign", "whitelist_only_set")`
 
----
+##### `set_rate_limit`
 
-### goal
+Configure per-address contribution rate limiting.
 
-Get campaign funding goal.
-
-**Signature:**
 ```rust
-pub fn goal(env: Env) -> i128
+pub fn set_rate_limit(env: Env, rate_limit: Option<RateLimit>) -> Result<(), ContractError>
 ```
 
-**Returns:** Goal amount in stroops
+Pass `None` to clear the rate limit.
 
----
+**Errors:** `InvalidRateLimit`
 
-### deadline
+**Events:** `("campaign", "rate_limit_updated")`
 
-Get campaign deadline.
-
-**Signature:**
-```rust
-pub fn deadline(env: Env) -> u64
+**Example:**
+```ignore
+// Max 100 XLM per address per hour
+contract.set_rate_limit(env, Some(RateLimit {
+    max_amount: 1_000_000_000,
+    window_seconds: 3600,
+}))?;
 ```
 
-**Returns:** Unix timestamp (seconds)
+#### Recurring Contributions
 
----
+##### `setup_recurring`
 
-### status
+Set up a scheduled recurring contribution plan.
 
-Get current campaign status.
-
-**Signature:**
 ```rust
-pub fn status(env: Env) -> Status
+pub fn setup_recurring(
+    env: Env,
+    contributor: Address,
+    amount: i128,
+    interval: u64,  // Seconds between contributions
+    end_date: u64,  // Unix timestamp to stop
+) -> Result<(), ContractError>
 ```
 
-**Returns:** Current `Status` enum value
+**Errors:** `InvalidRecurringPlan`
 
----
+**Events:** `("campaign", "recurring_setup")`
 
-### creator
+##### `execute_recurring`
 
-Get campaign creator address.
+Execute a pending recurring contribution for a contributor.
 
-**Signature:**
 ```rust
-pub fn creator(env: Env) -> Address
+pub fn execute_recurring(env: Env, contributor: Address) -> Result<(), ContractError>
 ```
 
-**Returns:** Creator's Stellar address
+**Events:** `("campaign", "recurring_executed")`
 
----
+##### `cancel_recurring`
 
-### contribution
+Cancel a contributor's recurring plan.
 
-Get a specific contributor's total contribution.
-
-**Signature:**
 ```rust
-pub fn contribution(env: Env, contributor: Address) -> i128
+pub fn cancel_recurring(env: Env, contributor: Address) -> Result<(), ContractError>
 ```
 
-**Parameters:**
-- `contributor` — Contributor's Stellar address
+**Events:** `("campaign", "recurring_cancelled")`
 
-**Returns:** Contribution amount in stroops (0 if no contribution)
+#### Delegation
 
-**Storage:** Persistent storage (read-only)
+##### `delegate_contribution`
 
----
+Authorize a delegate to contribute on your behalf.
 
-### is_contributor
-
-Check if an address has contributed.
-
-**Signature:**
 ```rust
-pub fn is_contributor(env: Env, address: Address) -> bool
+pub fn delegate_contribution(
+    env: Env,
+    delegator: Address,
+    delegate: Address,
+    amount: i128,
+) -> Result<(), ContractError>
 ```
 
-**Parameters:**
-- `address` — Stellar address to check
+**Events:** `("campaign", "delegation_created")`
 
-**Returns:** `true` if address has non-zero contribution, `false` otherwise
+##### `contribute_on_behalf`
 
----
+Delegate submits a contribution on behalf of the delegator.
 
-### min_contribution
-
-Get minimum contribution amount.
-
-**Signature:**
 ```rust
-pub fn min_contribution(env: Env) -> i128
+pub fn contribute_on_behalf(
+    env: Env,
+    delegate: Address,
+    delegator: Address,
+    amount: i128,
+    token: Address,
+) -> Result<(), ContractError>
 ```
 
-**Returns:** Minimum contribution in stroops
+**Events:** `("campaign", "delegated_contribution")`
 
----
+##### `revoke_delegation`
 
-### title
+Delegator revokes an active delegation.
 
-Get campaign title.
-
-**Signature:**
 ```rust
-pub fn title(env: Env) -> String
+pub fn revoke_delegation(env: Env, delegator: Address) -> Result<(), ContractError>
 ```
 
-**Returns:** Campaign title
+**Events:** `("campaign", "delegation_revoked")`
 
----
+#### Deadline Extension Voting
 
-### description
+##### `propose_extension`
 
-Get campaign description.
+Creator proposes a deadline extension subject to contributor vote.
 
-**Signature:**
 ```rust
-pub fn description(env: Env) -> String
+pub fn propose_extension(
+    env: Env,
+    new_deadline: u64,
+    voting_period: u64, // Seconds for voting window
+) -> Result<(), ContractError>
 ```
 
-**Returns:** Campaign description
+**Events:** `("campaign", "extension_proposed")`
 
----
+##### `vote_on_extension`
 
-### social_links
+Contributor votes on the active extension proposal. Vote weight = contribution amount.
 
-Get campaign social links.
-
-**Signature:**
 ```rust
-pub fn social_links(env: Env) -> Vec<String>
+pub fn vote_on_extension(
+    env: Env,
+    contributor: Address,
+    approve: bool,
+) -> Result<(), ContractError>
 ```
 
-**Returns:** Array of social media URLs or image CIDs
+**Errors:** `ProposalNotFound`, `VotingEnded`, `AlreadyVoted`
 
----
+**Events:** `("campaign", "extension_voted")`
 
-### accepted_tokens
+##### `execute_extension`
 
-Get whitelist of accepted tokens.
+Execute an approved extension proposal after voting ends.
 
-**Signature:**
 ```rust
-pub fn accepted_tokens(env: Env) -> Vec<Address>
+pub fn execute_extension(env: Env) -> Result<(), ContractError>
 ```
 
-**Returns:** Array of accepted token addresses (empty if no whitelist)
+**Events:** `("campaign", "extension_executed")`
 
----
+#### Emergency Withdrawal
 
-### platform_config
+##### `initiate_emergency_withdrawal`
 
-Get platform fee configuration.
+Initiates a time-locked emergency withdrawal (24-hour lock).
 
-**Signature:**
 ```rust
-pub fn platform_config(env: Env) -> Option<PlatformConfig>
+pub fn initiate_emergency_withdrawal(env: Env) -> Result<(), ContractError>
 ```
 
-**Returns:** `Some(PlatformConfig)` if configured, `None` otherwise
+**Events:** `("campaign", "emergency_initiated")`
 
----
+##### `setup_emergency_multisig`
 
-### version
+Configure multi-sig approvers for emergency withdrawal.
 
-Get contract version.
-
-**Signature:**
 ```rust
-pub fn version(_env: Env) -> u32
+pub fn setup_emergency_multisig(
+    env: Env,
+    approvers: Vec<Address>,
+    required_approvals: u32,
+) -> Result<(), ContractError>
 ```
 
-**Returns:** Contract version number (currently 3)
+**Events:** `("campaign", "multisig_configured")`
 
----
+##### `approve_emergency_withdrawal`
 
-### contributor_list
+Approver submits their approval for the pending emergency withdrawal.
 
-Get paginated list of contributors.
-
-**Signature:**
 ```rust
-pub fn contributor_list(env: Env, offset: u32, limit: u32) -> Vec<Address>
+pub fn approve_emergency_withdrawal(env: Env, approver: Address) -> Result<(), ContractError>
 ```
 
-**Parameters:**
-- `offset` — Starting index (0-based)
-- `limit` — Maximum results (capped at 50)
+**Events:** `("campaign", "emergency_approved")`
 
-**Returns:** Array of contributor addresses
+##### `execute_emergency_withdrawal`
 
-**Storage:** Persistent storage (read-only)
+Execute emergency withdrawal after lock period and multi-sig threshold met.
+
+```rust
+pub fn execute_emergency_withdrawal(env: Env) -> Result<(), ContractError>
+```
+
+**Errors:** `EmergencyLocked`, `MultiSigNotMet`
+
+**Events:** `("campaign", "emergency_executed")`
+
+##### `cancel_emergency_withdrawal`
+
+Cancel a pending emergency withdrawal.
+
+```rust
+pub fn cancel_emergency_withdrawal(env: Env) -> Result<(), ContractError>
+```
+
+#### Insurance
+
+##### `enable_insurance`
+
+Enable contributor insurance for the campaign.
+
+```rust
+pub fn enable_insurance(
+    env: Env,
+    fee_bps: u32,
+    provider: Address,
+) -> Result<(), ContractError>
+```
+
+**Errors:** `InvalidFee`
+
+**Events:** `("insurance", "enabled")`
+
+When insurance is enabled, a portion of each contribution (`fee_bps / 10_000`) is
+held in the insurance pool. If the campaign fails, contributors receive their
+insurance fee back in addition to their contribution refund.
+
+#### Contribution Matching
+
+##### `setup_matching`
+
+Sponsor configures a contribution matching pool.
+
+```rust
+pub fn setup_matching(
+    env: Env,
+    sponsor: Address,
+    match_ratio: u32, // Basis points (10 000 = 1:1 match)
+    max_match: i128,
+) -> Result<(), ContractError>
+```
+
+**Events:** `("campaign", "matching_setup")`
+
+**Example:**
+```ignore
+// 50% match up to 10 000 XLM
+contract.setup_matching(env, sponsor, 5_000, 100_000_000_000)?;
+```
+
+#### Reward Tiers
+
+##### `set_reward_tiers`
+
+Define contribution reward tiers (sorted ascending by `min_amount`).
+
+```rust
+pub fn set_reward_tiers(env: Env, tiers: Vec<RewardTier>) -> Result<(), ContractError>
+```
+
+**Events:** `("campaign", "tiers_set")`
+
+**Example:**
+```ignore
+let tiers = vec![
+    RewardTier { min_amount: 100_000_000,   name: "Bronze".into(), description: "Early supporter".into() },
+    RewardTier { min_amount: 1_000_000_000, name: "Silver".into(), description: "Major backer".into() },
+    RewardTier { min_amount: 10_000_000_000, name: "Gold".into(), description: "Champion".into() },
+];
+contract.set_reward_tiers(env, tiers)?;
+```
+
+##### `configure_rewards`
+
+Configure token rewards distributed to contributors.
+
+```rust
+pub fn configure_rewards(
+    env: Env,
+    reward_token: Address,
+    reward_per_unit: i128,
+) -> Result<(), ContractError>
+```
+
+**Events:** `("campaign", "rewards_configured")`
+
+##### `distribute_rewards`
+
+Distribute token rewards to a contributor based on their contribution.
+
+```rust
+pub fn distribute_rewards(env: Env, contributor: Address) -> Result<(), ContractError>
+```
+
+**Errors:** `NoRewardsConfigured`
+
+**Events:** `("campaign", "rewards_distributed")`
+
+#### Templates
+
+##### `initialize_from_template`
+
+Initialize a campaign using a predefined template.
+
+```rust
+pub fn initialize_from_template(
+    env: Env,
+    creator: Address,
+    token: Address,
+    goal: i128,
+    deadline: u64,
+    title: String,
+    description: String,
+    template_type: TemplateType,
+) -> Result<(), ContractError>
+```
+
+**Events:** `("campaign", "template_applied")`, `("campaign", "initialized")`
+
+##### `clone_campaign`
+
+Clone an existing campaign with new goal and deadline.
+
+```rust
+pub fn clone_campaign(
+    env: Env,
+    new_creator: Address,
+    new_goal: i128,
+    new_deadline: u64,
+) -> Result<(), ContractError>
+```
+
+**Events:** `("campaign", "cloned")`
+
+#### Read-Only Functions
+
+| Function | Signature | Returns |
+|----------|-----------|---------|
+| `get_stats` | `(env)` | `CampaignStats` |
+| `get_campaign_info` | `(env)` | `CampaignInfo` |
+| `get_performance_metrics` | `(env)` | `PerformanceMetrics` |
+| `total_raised` | `(env)` | `i128` |
+| `goal` | `(env)` | `i128` |
+| `deadline` | `(env)` | `u64` |
+| `contribution` | `(env, contributor: Address)` | `i128` |
+| `min_contribution` | `(env)` | `i128` |
+| `title` | `(env)` | `String` |
+| `description` | `(env)` | `String` |
+| `social_links` | `(env)` | `Vec<String>` |
+| `version` | `(env)` | `u32` (currently `4`) |
+| `get_rate_limit` | `(env)` | `Option<RateLimit>` |
+| `get_matching_config` | `(env)` | `Option<MatchingConfig>` |
+| `get_total_matched` | `(env)` | `i128` |
+| `get_contribution_history` | `(env, contributor)` | `Vec<ContributionRecord>` |
+| `get_contributor_tier` | `(env, contributor)` | `Option<RewardTier>` |
+| `get_goal_history` | `(env)` | `Vec<GoalAdjustment>` |
+| `get_metadata_version` | `(env, version: u32)` | `Option<MetadataVersion>` |
+| `contributor_list` | `(env, offset: u32, limit: u32)` | `Vec<Address>` |
 
 ---
 
-## Storage Layout
+### Events Reference
 
-### Instance Storage
+Every state-changing function publishes a typed event. All events use the topic
+format `("campaign", "<event_type>")` except insurance events which use `("insurance", "<type>")`.
 
-Stores campaign metadata and state. Persists for contract lifetime.
+| Event | Emitted by | Payload type |
+|-------|-----------|--------------|
+| `initialized` | `initialize` | `EventInitialized` |
+| `contributed` | `contribute` | `EventContributed` |
+| `contribution_recorded` | `contribute` | `EventContributionRecorded` |
+| `withdrawn` | `withdraw` | `EventWithdrawn` |
+| `refunded` | `refund_single` | `EventRefunded` |
+| `partial_refund` | `refund_partial` | `EventPartialRefund` |
+| `batch_refund_completed` | `refund_batch` | `EventBatchRefundCompleted` |
+| `metadata_updated` | `update_metadata` | `EventMetadataUpdated` |
+| `metadata_versioned` | `update_metadata` | `EventMetadataVersioned` |
+| `deadline_extended` | `extend_deadline` | `EventDeadlineExtended` |
+| `goal_adjusted` | `adjust_goal` | `EventGoalAdjusted` |
+| `category_updated` | `update_category` | `EventCategoryUpdated` |
+| `visibility_changed` | `set_visibility` | `EventVisibilityChanged` |
+| `status_changed` | various | `EventStatusChanged` |
+| `cancelled` | `cancel_campaign` | `EventCancelled` |
+| `paused` | `pause` | `EventPaused` |
+| `resumed` | `resume` / `unpause` | `EventResumed` |
+| `whitelisted` | `add_to_whitelist` | `EventWhitelisted` |
+| `whitelist_removed` | `remove_from_whitelist` | `EventWhitelistRemoved` |
+| `blacklisted` | `add_to_blacklist` | `EventBlacklisted` |
+| `blacklist_removed` | `remove_from_blacklist` | `EventBlacklistRemoved` |
+| `whitelist_only_set` | `set_whitelist_only` | `EventWhitelistOnlySet` |
+| `rate_limit_updated` | `set_rate_limit` | `EventRateLimitUpdated` |
+| `rate_limit_hit` | `contribute` | `EventRateLimitHit` |
+| `recurring_setup` | `setup_recurring` | `EventRecurringSetup` |
+| `recurring_executed` | `execute_recurring` | `EventRecurringExecuted` |
+| `recurring_cancelled` | `cancel_recurring` | `EventRecurringCancelled` |
+| `delegation_created` | `delegate_contribution` | `EventDelegationCreated` |
+| `delegated_contribution` | `contribute_on_behalf` | `EventDelegatedContribution` |
+| `delegation_revoked` | `revoke_delegation` | `EventDelegationRevoked` |
+| `extension_proposed` | `propose_extension` | `EventExtensionProposed` |
+| `extension_voted` | `vote_on_extension` | `EventExtensionVoted` |
+| `extension_executed` | `execute_extension` | `EventExtensionExecuted` |
+| `emergency_initiated` | `initiate_emergency_withdrawal` | `EventEmergencyInitiated` |
+| `multisig_configured` | `setup_emergency_multisig` | `EventMultiSigConfigured` |
+| `emergency_approved` | `approve_emergency_withdrawal` | `EventEmergencyApproved` |
+| `emergency_executed` | `execute_emergency_withdrawal` | `EventEmergencyExecuted` |
+| `insurance enabled` | `enable_insurance` | `EventInsuranceEnabled` |
+| `insurance payout` | refund flow | `EventInsurancePayout` |
+| `matching_setup` | `setup_matching` | `EventMatchingSetup` |
+| `tiers_set` | `set_reward_tiers` | `EventTiersSet` |
+| `tier_assigned` | `contribute` | `EventTierAssigned` |
+| `rewards_configured` | `configure_rewards` | `EventRewardsConfigured` |
+| `rewards_distributed` | `distribute_rewards` | `EventRewardsDistributed` |
+| `template_applied` | `initialize_from_template` | `EventTemplateApplied` |
+| `cloned` | `clone_campaign` | `EventCampaignCloned` |
+| `indexed` | `initialize` | `EventCampaignIndexed` |
+
+---
+
+### Storage Layout
+
+#### Instance Storage (campaign-wide state)
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `CREATOR` | Address | Campaign creator |
-| `TOKEN` | Address | Primary token address |
-| `GOAL` | i128 | Funding goal in stroops |
-| `DEADLINE` | u64 | Unix timestamp deadline |
-| `TOTAL` | i128 | Total raised in stroops |
-| `STATUS` | Status | Current campaign status |
-| `MIN` | i128 | Minimum contribution |
-| `TITLE` | String | Campaign title |
-| `DESC` | String | Campaign description |
-| `SOCIAL` | Vec<String> | Social links/image CIDs |
-| `PLATFORM` | PlatformConfig | Optional fee configuration |
-| `ADMIN` | Address | Admin address (usually creator) |
-| `ContributorCount` | u32 | Number of unique contributors |
-| `LargestContribution` | i128 | Largest single contribution |
-| `AcceptedTokens` | Vec<Address> | Whitelist of accepted tokens |
+| `CREATOR` | `Address` | Campaign creator / admin |
+| `TOKEN` | `Address` | Primary contribution token |
+| `GOAL` | `i128` | Funding goal in stroops |
+| `DEADLINE` | `u64` | Unix timestamp deadline |
+| `TOTAL` | `i128` | Total raised in stroops |
+| `STATUS` | `Status` | Current campaign status |
+| `MIN` | `i128` | Minimum contribution |
+| `MAX` | `i128` | Per-contributor cap (0 = none) |
+| `TITLE` | `String` | Campaign title |
+| `DESC` | `String` | Campaign description |
+| `SOCIAL` | `Vec<String>` | Social links |
+| `PLATFORM` | `PlatformConfig` | Optional fee config |
+| `ADMIN` | `Address` | Admin address |
+| `RATELIMIT` | `RateLimit` | Optional rate limit config |
+| `INSURE` | `InsuranceConfig` | Optional insurance config |
+| `INSPOOL` | `i128` | Insurance pool balance |
+| `CATEGORY` | `Category` | Campaign category |
+| `VESTING` | `VestingSchedule` | Optional vesting schedule |
+| `GHIST` | `Vec<GoalAdjustment>` | Goal adjustment history |
+| `VIS` | `Visibility` | Campaign visibility |
+| `METAHIST` | `Vec<MetadataVersion>` | Metadata version history |
+| `START` | `u64` | Campaign start timestamp |
 
-### Persistent Storage
+#### Persistent Storage (per-contributor data)
 
-Stores contributor-specific data with TTL management.
-
-| Key | Type | Description | TTL |
-|-----|------|-------------|-----|
-| `Contribution(Address)` | i128 | Individual contribution amount | 100 ledgers |
-| `ContributorPresence(Address)` | bool | Whether address has contributed | 100 ledgers |
-| `CONTRIBS` | Vec<Address> | List of all contributors | 100 ledgers |
-
-**TTL Strategy:** Persistent entries use threshold of 17,280 ledgers (~2 days) and extension of 518,400 ledgers (~60 days). This ensures data remains available for refunds and historical queries while managing storage costs.
-
----
-
-## Events
-
-The contract emits Soroban events for every significant state change. All events share the same topic prefix `("campaign", "<event_type>")` and carry typed data payloads.
-
-### Event summary
-
-| Event type | Emitted by | Data payload | Description |
-|------------|-----------|--------------|-------------|
-| `initialized` | `initialize` | `()` | Campaign created and ready to accept contributions |
-| `contributed` | `contribute` | `(contributor: Address, amount: i128)` | A contribution was received |
-| `withdrawn` | `withdraw` | `(creator: Address, total: i128)` | Creator withdrew funds after a successful campaign |
-| `refunded` | `refund_single` | `(contributor: Address, amount: i128)` | A contributor claimed their refund |
-| `metadata_updated` | `update_metadata` | `()` | Campaign title, description, or social links changed |
-| `deadline_extended` | `extend_deadline` | `new_deadline: u64` | Campaign deadline was pushed to a later time |
-| `cancelled` | `cancel_campaign` | `()` | Campaign was cancelled by the creator |
-| `paused` | `pause` | `()` | Campaign was paused; contributions blocked |
-| `unpaused` | `unpause` | `()` | Campaign was resumed after a pause |
+| Key | Type | TTL |
+|-----|------|-----|
+| `Contribution(Address)` | `i128` | 100 ledgers |
+| `ContributorPresence(Address)` | `bool` | 100 ledgers |
+| `ContributionMessage(Address)` | `String` | 100 ledgers |
+| `RecurringPlan(Address)` | `RecurringPlan` | 100 ledgers |
+| `ContributionHistory(Address)` | `Vec<ContributionRecord>` | 100 ledgers |
+| `ContributorTier(Address)` | `RewardTier` | 100 ledgers |
+| `Whitelist(Address)` | `bool` | 100 ledgers |
+| `Blacklist(Address)` | `bool` | 100 ledgers |
+| `Delegation(Address)` | `Delegation` | 100 ledgers |
+| `InsuranceFee(Address)` | `i128` | 100 ledgers |
+| `RateLimitTimestamp(Address)` | `u64` | 100 ledgers |
+| `RateLimitAmount(Address)` | `i128` | 100 ledgers |
+| `CONTRIBS` | `Vec<Address>` | 100 ledgers |
 
 ---
 
-### `initialized`
+## Registry Contract
 
-Emitted once when `initialize` completes successfully.
+A lightweight on-chain directory of all deployed campaign contracts.
 
-**Topics:** `("campaign", "initialized")`  
-**Data:** `()` (no payload)  
-**When:** Campaign storage is fully written and the contract is ready to accept contributions.
+### Functions
+
+#### `register`
+
+Register a campaign address. No-op if already registered.
 
 ```rust
-env.events().publish(("campaign", "initialized"), ());
+pub fn register(env: Env, campaign_id: Address)
 ```
 
----
+**Events:** `("registry", "registered")`
 
-### `contributed`
+**Example:**
+```ignore
+// Called immediately after deploying a new CrowdfundContract
+registry_client.register(&new_campaign_address);
+```
 
-Emitted every time a contributor successfully pledges tokens.
+#### `register_with_category`
 
-**Topics:** `("campaign", "contributed")`  
-**Data:** `(contributor: Address, amount: i128)`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `contributor` | `Address` | Stellar address of the contributor |
-| `amount` | `i128` | Amount contributed in this transaction (stroops) |
+Register a campaign with a numeric category index for filtered discovery.
 
 ```rust
-env.events().publish(("campaign", "contributed"), (contributor, amount));
+pub fn register_with_category(env: Env, campaign_id: Address, category_id: u32)
 ```
 
-> `amount` is the amount sent in **this** transaction, not the contributor's cumulative total. To get the running total call `contribution(contributor)`.
+Category IDs match the `Category` enum discriminants:
 
----
+| `category_id` | Category |
+|---------------|----------|
+| 0 | Charity |
+| 1 | Technology |
+| 2 | Creative |
+| 3 | Event |
+| 4 | Personal |
+| 5 | Other |
 
-### `withdrawn`
+#### `list`
 
-Emitted when the creator successfully withdraws funds after the campaign goal is met.
-
-**Topics:** `("campaign", "withdrawn")`  
-**Data:** `(creator: Address, total: i128)`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `creator` | `Address` | Campaign creator's Stellar address |
-| `total` | `i128` | Total raised before the platform fee deduction (stroops) |
+Paginated list of all registered campaigns.
 
 ```rust
-env.events().publish(("campaign", "withdrawn"), (creator, total));
+pub fn list(env: Env, offset: u32, limit: u32) -> Vec<Address>
 ```
 
-> `total` is the gross amount raised. The creator receives `total - platform_fee`. Use `get_stats()` before withdrawal to calculate the net payout.
+**Example:**
+```ignore
+let page1 = registry_client.list(&0, &20);  // first 20
+let page2 = registry_client.list(&20, &20); // next 20
+```
 
----
+#### `get_campaigns_by_category`
 
-### `refunded`
-
-Emitted for each contributor who successfully claims a refund via `refund_single`.
-
-**Topics:** `("campaign", "refunded")`  
-**Data:** `(contributor: Address, amount: i128)`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `contributor` | `Address` | Address receiving the refund |
-| `amount` | `i128` | Refund amount in stroops |
+Paginated list filtered by category.
 
 ```rust
-env.events().publish(("campaign", "refunded"), (contributor, amount));
+pub fn get_campaigns_by_category(
+    env: Env,
+    category_id: u32,
+    offset: u32,
+    limit: u32,
+) -> Vec<Address>
 ```
 
-> This event is only emitted when `amount > 0`. Calling `refund_single` for an address with no contribution is a no-op and produces no event.
-
----
-
-### `metadata_updated`
-
-Emitted when the creator updates campaign metadata (title, description, or social links).
-
-**Topics:** `("campaign", "metadata_updated")`  
-**Data:** `()` (no payload)
-
-```rust
-env.events().publish(("campaign", "metadata_updated"), ());
+**Example:**
+```ignore
+// First 10 Technology campaigns
+let tech = registry_client.get_campaigns_by_category(&1, &0, &10);
 ```
-
-> To read the new values after this event, call `title()`, `description()`, or `social_links()`.
-
----
-
-### `deadline_extended`
-
-Emitted when the creator pushes the campaign deadline to a later timestamp.
-
-**Topics:** `("campaign", "deadline_extended")`  
-**Data:** `new_deadline: u64`
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `new_deadline` | `u64` | New Unix timestamp (seconds) for the campaign end |
-
-```rust
-env.events().publish(("campaign", "deadline_extended"), new_deadline);
-```
-
----
-
-### `cancelled`
-
-Emitted when the creator cancels the campaign. After this event, contributors may call `refund_single` to reclaim their funds.
-
-**Topics:** `("campaign", "cancelled")`  
-**Data:** `()` (no payload)
-
-```rust
-env.events().publish(("campaign", "cancelled"), ());
-```
-
----
-
-### `paused`
-
-Emitted when the admin pauses the campaign. While paused, `contribute` calls fail with `CampaignPaused`.
-
-**Topics:** `("campaign", "paused")`  
-**Data:** `()` (no payload)
-
-```rust
-env.events().publish(("campaign", "paused"), ());
-```
-
----
-
-### `unpaused`
-
-Emitted when the admin resumes a paused campaign. Contributions are accepted again.
-
-**Topics:** `("campaign", "unpaused")`  
-**Data:** `()` (no payload)
-
-```rust
-env.events().publish(("campaign", "unpaused"), ());
-```
-
----
-
-### Listening to events from the frontend
-
-Use the Soroban RPC `getEvents` method to subscribe to or query past events. The `@stellar/stellar-sdk` client wraps this API.
-
-#### Fetch all events for a campaign contract
-
-```ts
-import { SorobanRpc } from "@stellar/stellar-sdk";
-
-const server = new SorobanRpc.Server(process.env.NEXT_PUBLIC_SOROBAN_RPC_URL!);
-
-async function getCampaignEvents(contractId: string) {
-  const response = await server.getEvents({
-    startLedger: 0,
-    filters: [
-      {
-        type: "contract",
-        contractIds: [contractId],
-        topics: [["*", "*"]], // match all ("campaign", "<type>") topics
-      },
-    ],
-    limit: 100,
-  });
-  return response.events;
-}
-```
-
-#### Listen for new contributions in real time
-
-```ts
-async function watchContributions(
-  contractId: string,
-  onContribution: (contributor: string, amount: bigint) => void,
-) {
-  let latestLedger = (await server.getLatestLedger()).sequence;
-
-  setInterval(async () => {
-    const response = await server.getEvents({
-      startLedger: latestLedger,
-      filters: [
-        {
-          type: "contract",
-          contractIds: [contractId],
-          topics: [["campaign", "contributed"]],
-        },
-      ],
-    });
-
-    for (const event of response.events) {
-      const [contributor, amount] = event.value.value as [
-        { value: string },
-        { value: bigint },
-      ];
-      onContribution(contributor.value, amount.value);
-    }
-
-    if (response.events.length > 0) {
-      latestLedger = response.latestLedger + 1;
-    }
-  }, 5_000); // poll every 5 seconds
-}
-```
-
-#### Decode a `contributed` event payload
-
-```ts
-import { xdr, scValToNative } from "@stellar/stellar-sdk";
-
-function decodeContributedEvent(event: SorobanRpc.Api.EventResponse) {
-  // topics[0] = "campaign", topics[1] = "contributed"
-  const [contributor, amount] = scValToNative(event.value) as [string, bigint];
-  return { contributor, amount };
-}
-```
-
-#### React hook example
-
-```tsx
-import { useEffect, useState } from "react";
-import { SorobanRpc, scValToNative } from "@stellar/stellar-sdk";
-
-export function useContributionEvents(contractId: string) {
-  const [events, setEvents] = useState<{ contributor: string; amount: bigint }[]>([]);
-
-  useEffect(() => {
-    const server = new SorobanRpc.Server(process.env.NEXT_PUBLIC_SOROBAN_RPC_URL!);
-    let startLedger = 0;
-
-    const poll = async () => {
-      const res = await server.getEvents({
-        startLedger,
-        filters: [
-          {
-            type: "contract",
-            contractIds: [contractId],
-            topics: [["campaign", "contributed"]],
-          },
-        ],
-      });
-
-      const decoded = res.events.map((e) => {
-        const [contributor, amount] = scValToNative(e.value) as [string, bigint];
-        return { contributor, amount };
-      });
-
-      if (decoded.length > 0) {
-        setEvents((prev) => [...prev, ...decoded]);
-        startLedger = res.latestLedger + 1;
-      }
-    };
-
-    poll();
-    const id = setInterval(poll, 6_000);
-    return () => clearInterval(id);
-  }, [contractId]);
-
-  return events;
-}
-```
-
----
-
-## Accepted Tokens & Multi-Token Support
-
-The contract supports a token whitelist (`accepted_tokens`) that controls which Stellar tokens contributors may use. This section explains how the whitelist works, how to configure it, and how to use it with XLM or custom tokens.
-
-### How the Whitelist Works
-
-At initialization the creator can pass an optional `accepted_tokens: Option<Vec<Address>>` argument.
-
-**No whitelist set (default)**
-
-When `accepted_tokens` is `None`, the contract only accepts the single `token` address passed to `initialize`. Any `contribute` call that passes a different token address will fail with `TokenNotAccepted` (error 13).
-
-**Whitelist set**
-
-When `accepted_tokens` is `Some(vec![...])`, the contract stores the list under `DataKey::AcceptedTokens` in instance storage. On every `contribute` call the contract checks whether the supplied `token` is present in that list. If it is not, the call fails with `TokenNotAccepted`.
-
-The default `token` address is **not** automatically included in the whitelist — if you want it accepted you must add it explicitly.
-
-Token validation logic (from `contribute`):
-
-```rust
-let default_token: Address = env.storage().instance().get(&KEY_TOKEN).unwrap();
-if let Some(whitelist) = env.storage().instance().get::<_, Vec<Address>>(&DataKey::AcceptedTokens) {
-    if !whitelist.contains(&token) {
-        return Err(ContractError::TokenNotAccepted);
-    }
-} else if token != default_token {
-    return Err(ContractError::TokenNotAccepted);
-}
-```
-
-### Token Address Verification
-
-Before passing a token address to the contract, verify it on-chain using the Stellar CLI or the Soroban RPC.
-
-**XLM (native asset)**
-
-On Stellar, the native XLM asset is wrapped as a Soroban token contract. Retrieve its address with:
-
-```bash
-# Testnet
-stellar contract id asset --asset native --network testnet
-
-# Mainnet
-stellar contract id asset --asset native --network mainnet
-```
-
-The returned contract ID is the address you pass as `token` or include in `accepted_tokens`.
-
-**Custom / issued tokens**
-
-For any SEP-41-compatible token (e.g., USDC, custom assets), obtain the contract address from the issuer or asset explorer, then verify it responds to the standard token interface:
-
-```bash
-# Check token name — should return without error
-stellar contract invoke \
-  --id <TOKEN_CONTRACT_ID> \
-  --network testnet \
-  -- name
-```
-
-### Initializing with Multiple Accepted Tokens
-
-Pass the list of allowed token addresses in the `accepted_tokens` parameter. The example below accepts both XLM and a custom USDC-like token:
-
-```bash
-stellar contract invoke \
-  --id <CAMPAIGN_CONTRACT_ID> \
-  --source <CREATOR_SECRET_KEY> \
-  --network testnet \
-  -- initialize \
-  --creator <CREATOR_ADDRESS> \
-  --token <XLM_CONTRACT_ID> \
-  --goal 1000000000 \
-  --deadline 1800000000 \
-  --min_contribution 10000000 \
-  --title "My Campaign" \
-  --description "Help us build something great" \
-  --social_links '[]' \
-  --platform_config 'null' \
-  --accepted_tokens '["<XLM_CONTRACT_ID>", "<USDC_CONTRACT_ID>"]'
-```
-
-> **Note:** The `token` parameter sets the primary token used for refunds and withdrawals. All tokens in `accepted_tokens` are accepted for contributions, but refunds via `refund_single` always use the primary `token`. Design your campaign accordingly.
-
-### Accepting Only XLM
-
-To accept only XLM, omit `accepted_tokens` (pass `null`) and set `token` to the native asset contract ID:
-
-```bash
-stellar contract invoke \
-  --id <CAMPAIGN_CONTRACT_ID> \
-  --source <CREATOR_SECRET_KEY> \
-  --network testnet \
-  -- initialize \
-  --creator <CREATOR_ADDRESS> \
-  --token <XLM_CONTRACT_ID> \
-  --goal 1000000000 \
-  --deadline 1800000000 \
-  --min_contribution 10000000 \
-  --title "XLM-only Campaign" \
-  --description "Accepts XLM only" \
-  --social_links 'null' \
-  --platform_config 'null' \
-  --accepted_tokens 'null'
-```
-
-### Contributing with a Specific Token
-
-The `contribute` function requires the caller to specify which token they are sending. The address must match an entry in the whitelist (or the default token if no whitelist is set):
-
-```bash
-# Contribute 5 XLM
-stellar contract invoke \
-  --id <CAMPAIGN_CONTRACT_ID> \
-  --source <CONTRIBUTOR_SECRET_KEY> \
-  --network testnet \
-  -- contribute \
-  --contributor <CONTRIBUTOR_ADDRESS> \
-  --amount 50000000 \
-  --token <XLM_CONTRACT_ID>
-
-# Contribute 5 USDC (only works if USDC is in the whitelist)
-stellar contract invoke \
-  --id <CAMPAIGN_CONTRACT_ID> \
-  --source <CONTRIBUTOR_SECRET_KEY> \
-  --network testnet \
-  -- contribute \
-  --contributor <CONTRIBUTOR_ADDRESS> \
-  --amount 50000000 \
-  --token <USDC_CONTRACT_ID>
-```
-
-### Querying the Accepted Tokens List
-
-Use the `accepted_tokens` view function to inspect the current whitelist at any time:
-
-```bash
-stellar contract invoke \
-  --id <CAMPAIGN_CONTRACT_ID> \
-  --network testnet \
-  -- accepted_tokens
-```
-
-Returns a JSON array of token contract addresses, or an empty array `[]` if no whitelist was set.
-
-### Error Reference
-
-| Error | Code | When it occurs |
-|-------|------|----------------|
-| `TokenNotAccepted` | 13 | `contribute` called with a token address not in the whitelist (or not equal to the default token when no whitelist is set) |
 
 ---
 
 ## Usage Examples
 
-### Initialize Campaign
+### Full campaign lifecycle (Rust test style)
 
-```rust
-let platform_config = Some(PlatformConfig {
-    address: platform_address,
-    fee_bps: 250,  // 2.5% fee
-});
+```ignore
+use soroban_sdk::{testutils::Address as _, Address, Env};
 
-initialize(
-    env,
-    creator,
-    token_address,
+let env = Env::default();
+env.mock_all_auths();
+
+let creator = Address::generate(&env);
+let contributor = Address::generate(&env);
+let token = Address::generate(&env); // mock token
+
+// 1. Initialize
+contract.initialize(
+    env.clone(), creator.clone(), token.clone(),
     1_000_000_000,  // 100 XLM goal
-    deadline_timestamp,
-    10_000_000,     // 1 XLM minimum
+    env.ledger().timestamp() + 86400, // 1 day deadline
+    10_000_000, 0,
     String::from_str(&env, "My Campaign"),
-    String::from_str(&env, "Help us build..."),
-    None,
-    platform_config,
-    None,
+    String::from_str(&env, "A great cause"),
+    None, None, None,
+    Category::Charity, None, None,
 )?;
+
+// 2. Contribute
+contract.contribute(env.clone(), contributor.clone(), 500_000_000, token.clone(), None)?;
+
+// 3. Check stats
+let stats = contract.get_stats(env.clone());
+assert_eq!(stats.total_raised, 500_000_000);
+
+// 4. Withdraw (after deadline + goal met)
+contract.withdraw(env.clone())?;
 ```
 
-### Contribute
+### CLI interaction
 
-```rust
-contribute(
-    env,
-    contributor,
-    50_000_000,  // 5 XLM
-    token_address,
-)?;
-```
+```bash
+# Initialize a campaign
+stellar contract invoke \
+  --id <CONTRACT_ID> --source <CREATOR_KEY> --network testnet \
+  -- initialize \
+  --creator <CREATOR_ADDR> --token <TOKEN_ADDR> \
+  --goal 1000000000 --deadline 1800000000 \
+  --min_contribution 10000000 --max_contribution 0 \
+  --title '"My Campaign"' --description '"Help us build"' \
+  --social_links null --platform_config null \
+  --accepted_tokens null --category Charity \
+  --vesting null --penalty_bps null
 
-### Withdraw (Creator)
+# Contribute 5 XLM
+stellar contract invoke \
+  --id <CONTRACT_ID> --source <CONTRIBUTOR_KEY> --network testnet \
+  -- contribute \
+  --contributor <CONTRIBUTOR_ADDR> --amount 50000000 \
+  --token <TOKEN_ADDR> --message null
 
-```rust
-// After deadline and if goal reached
-withdraw(env)?;
-```
-
-### Refund (Contributor)
-
-```rust
-// After deadline if goal not met, or if campaign cancelled
-refund_single(env, contributor)?;
+# Get stats
+stellar contract invoke --id <CONTRACT_ID> --network testnet -- get_stats
 ```
 
 ---
 
 ## Security Considerations
 
-1. **Authorization:** All state-changing functions require caller authorization via `require_auth()`
-2. **Overflow Protection:** Arithmetic operations use `checked_add()` to prevent overflow
-3. **Reentrancy:** Token transfers use Soroban's safe token interface
-4. **TTL Management:** Persistent storage uses TTL to manage costs while ensuring data availability
-5. **Pull-Based Refunds:** Refunds use pull model (contributor-initiated) to avoid single-point-of-failure
-6. **Fee Validation:** Platform fees capped at 10,000 basis points (100%)
+1. **Authorization** — all mutating functions call `require_auth()` on the relevant address.
+2. **Overflow protection** — all arithmetic uses `checked_add` / `checked_mul`.
+3. **Pull-based refunds** — contributors claim individually; no single-point-of-failure batch.
+4. **Fee cap** — platform fees are hard-capped at 10 000 bps (100%).
+5. **Reentrancy** — token transfers use Soroban's safe `token::Client` interface.
+6. **TTL management** — persistent storage uses explicit TTL extension to control costs.
+7. **Emergency multi-sig** — emergency withdrawals require time-lock + multi-sig approval.
+8. **Rate limiting** — per-address contribution rate limits prevent spam/manipulation.
 
 ---
 
-## Deployment Notes
-
-- Contract is compiled to WASM and deployed to Stellar testnet/mainnet
-- Each campaign gets its own contract instance
-- Registry contract maintains list of active campaigns
-- Soroban RPC endpoint required for interaction
-- Freighter wallet integration for frontend signing
+*For the generated rustdoc API reference, see the [deployed docs](https://fund-my-cause.github.io/Fund-My-Cause/crowdfund/) or build locally with `cargo doc --workspace --no-deps`.*
