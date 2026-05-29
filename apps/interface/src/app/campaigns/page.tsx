@@ -16,11 +16,24 @@ import { ALL_CAMPAIGNS } from "@/lib/campaigns";
 import { Search, GitCompare, SlidersHorizontal, X } from "lucide-react";
 import { useComparison } from "@/context/ComparisonContext";
 import { Pagination } from "@/components/ui/Pagination";
+import { ShareModal } from "@/components/ui/ShareModal";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type FilterTab = "all" | "active" | "funded" | "ended";
-type SortOption = "recent" | "popular" | "deadline" | "progress";
+type SortOption = "recent" | "most-funded" | "ending-soon" | "progress";
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const CATEGORIES = ["Technology", "Education", "Health", "Arts", "Environment", "Community"];
+const SORT_OPTIONS = [
+  { label: "Newest", value: "recent" },
+  { label: "Most Funded", value: "most-funded" },
+  { label: "Ending Soon", value: "ending-soon" },
+];
+
+const selectCls = "bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-xl px-3 py-2 text-sm text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500";
+const inputCls = "w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -41,7 +54,7 @@ function applySort(campaigns: Campaign[], sort: SortOption): Campaign[] {
     if (sort === "most-funded") return b.raised / b.goal - a.raised / a.goal;
     if (sort === "ending-soon")
       return new Date(a.deadline).getTime() - new Date(b.deadline).getTime();
-    return Number(b.id) - Number(a.id);
+    return Number(b.id) - Number(a.id); // "recent" - newest first
   });
 }
 
@@ -56,7 +69,7 @@ const PAGE_SIZE_OPTIONS = [9, 18, 36];
 
 // ── Inner component (uses useSearchParams) ────────────────────────────────────
 
-function CampaignsInner() {
+export function CampaignsInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { selected, clear } = useComparison();
@@ -78,7 +91,10 @@ function CampaignsInner() {
     title: string;
   } | null>(null);
   const [inputValue, setInputValue] = useState(query);
+  const searchQuery = inputValue.trim();
+  const hasSearch = searchQuery.length > 0;
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showMobileFilters, setShowMobileFilters] = useState(false);
   const [goalMin, setGoalMin] = useState(searchParams.get("goalMin") ?? "");
   const [goalMax, setGoalMax] = useState(searchParams.get("goalMax") ?? "");
   const [dateFrom, setDateFrom] = useState(searchParams.get("dateFrom") ?? "");
@@ -89,7 +105,7 @@ function CampaignsInner() {
     if (
       value === "" ||
       (key === "filter" && value === "all") ||
-      (key === "sort" && value === "newest")
+      (key === "sort" && value === "recent")
     ) {
       params.delete(key);
     } else {
@@ -123,6 +139,35 @@ function CampaignsInner() {
     router.replace(`/campaigns?${params.toString()}`, { scroll: false });
   };
 
+  const clearAdvanced = () => {
+    setGoalMin("");
+    setGoalMax("");
+    setDateFrom("");
+    setDateTo("");
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("goalMin");
+    params.delete("goalMax");
+    params.delete("dateFrom");
+    params.delete("dateTo");
+    params.delete("page");
+    router.replace(`/campaigns?${params.toString()}`, { scroll: false });
+  };
+
+  const applyAdvanced = () => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (goalMin) params.set("goalMin", goalMin);
+    else params.delete("goalMin");
+    if (goalMax) params.set("goalMax", goalMax);
+    else params.delete("goalMax");
+    if (dateFrom) params.set("dateFrom", dateFrom);
+    else params.delete("dateFrom");
+    if (dateTo) params.set("dateTo", dateTo);
+    else params.delete("dateTo");
+    params.delete("page");
+    router.replace(`/campaigns?${params.toString()}`, { scroll: false });
+    setShowAdvanced(false);
+  };
+
   const activeGoalMin = searchParams.get("goalMin")
     ? Number(searchParams.get("goalMin"))
     : null;
@@ -141,8 +186,8 @@ function CampaignsInner() {
   const filtered = applySort(
     applyFilter(
       ALL_CAMPAIGNS.filter((c) => {
-        if (query) {
-          const q = query.toLowerCase();
+        if (hasSearch) {
+          const q = searchQuery.toLowerCase();
           if (
             !c.title.toLowerCase().includes(q) &&
             !c.description.toLowerCase().includes(q) &&
@@ -170,6 +215,8 @@ function CampaignsInner() {
     (currentPage - 1) * pageSize,
     currentPage * pageSize,
   );
+  const resultStart = filtered.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const resultEnd = Math.min(filtered.length, currentPage * pageSize);
 
   return (
     <>
@@ -219,6 +266,14 @@ function CampaignsInner() {
           ))}
         </select>
 
+        <button
+          onClick={() => setShowMobileFilters((value) => !value)}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm font-medium transition bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:border-indigo-500"
+        >
+          <SlidersHorizontal size={14} />
+          Filters & Sort
+        </button>
+
         {/* Advanced filters toggle */}
         <button
           onClick={() => setShowAdvanced((v) => !v)}
@@ -232,6 +287,18 @@ function CampaignsInner() {
           <SlidersHorizontal size={14} />
           Filters{hasAdvanced ? " ●" : ""}
         </button>
+
+        {hasSearch && (
+          <button
+            onClick={() => {
+              setInputValue("");
+              setParam("q", "");
+            }}
+            className="text-sm text-indigo-600 hover:text-indigo-500 transition"
+          >
+            Clear search
+          </button>
+        )}
       </div>
 
       {/* Advanced filter panel */}
@@ -306,13 +373,32 @@ function CampaignsInner() {
           </div>
         </div>
       )}
+      {showMobileFilters && (
+        <div className="mb-4 rounded-2xl border border-gray-700 bg-gray-900 p-5 space-y-4 sm:hidden">
+          <h3 className="text-sm font-semibold text-gray-300">Filter by Status</h3>
+          <div className="flex flex-col gap-2">
+            {FILTER_TABS.map((tab, idx) => (
+              <button
+                key={tab.value}
+                onClick={() => setParam("filter", tab.value)}
+                className={`w-full text-left rounded-xl px-4 py-3 text-sm font-medium transition ${
+                  filter === tab.value
+                    ? "bg-indigo-600 text-white"
+                    : "bg-gray-800 text-gray-200 hover:bg-gray-700"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Filter tabs */}
       <div
-        className="flex gap-2 mb-8"
-        role="tablist"
-        aria-label="Filter campaigns"
+        className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-6"
       >
+        <div className="flex flex-wrap gap-2" role="tablist" aria-label="Filter campaigns">
         {FILTER_TABS.map((tab, idx) => (
           <button
             key={tab.value}
@@ -352,6 +438,14 @@ function CampaignsInner() {
           </button>
         ))}
       </div>
+      </div>
+
+      {filtered.length > 0 && (
+        <p className="text-sm text-gray-500 mb-4">
+          Showing {resultStart}–{resultEnd} of {filtered.length} campaign
+          {filtered.length === 1 ? "" : "s"}
+        </p>
+      )}
 
       {/* Grid */}
       {filtered.length === 0 ? (
@@ -360,7 +454,7 @@ function CampaignsInner() {
           title="No campaigns found"
           description="Try adjusting your search or filters to find what you're looking for."
           action={{
-            label: "Clear filters",
+            label: "Browse All Campaigns",
             onClick: () => router.replace("/campaigns"),
           }}
         />
@@ -435,12 +529,15 @@ function CampaignsInner() {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-export default function CampaignsPage() {
+export default function DiscoveryPage() {
   return (
     <main className="min-h-screen bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-white">
       <Navbar />
       <div className="max-w-6xl mx-auto px-6 py-12">
-        <h1 className="text-3xl font-bold mb-8">Campaigns</h1>
+        <h1 className="text-3xl font-bold mb-2">Discover Campaigns</h1>
+        <p className="text-gray-500 mb-8">
+          Find and support causes that matter to you
+        </p>
         <Suspense fallback={<LoadingSkeletonGrid count={6} />}>
           <CampaignsInner />
         </Suspense>

@@ -129,6 +129,9 @@ function normalizeStatus(value: unknown): CampaignStatus {
     }
   }
 
+  return "Active" as CampaignStatus;
+}
+
 async function simulateView(contractId: string, method: string, args: xdr.ScVal[] = []) {
   const rpc = new SorobanRpc.Server(RPC_URL);
   const contract = new Contract(contractId);
@@ -662,7 +665,3 @@ export async function fetchTransactionHistory(
     return [];
   }
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-// ── RPC URL alias ─────────────────────────────────────────────────────────────

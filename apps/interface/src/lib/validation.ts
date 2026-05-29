@@ -82,6 +82,34 @@ export function validateGoal(goal: string): string | null {
   return null;
 }
 
+export function validateContractId(id: string): string | null {
+  if (!id || !id.trim()) {
+    return "Contract ID is required.";
+  }
+  if (!isValidContractId(id.trim())) {
+    return "Contract ID is invalid.";
+  }
+  return null;
+}
+
+export function validateVideoUrl(videoUrl: string): string | null {
+  if (!videoUrl || !videoUrl.trim()) {
+    return null;
+  }
+
+  const trimmed = videoUrl.trim();
+  if (!/^https:\/\//i.test(trimmed)) {
+    return "Enter a valid URL starting with https://";
+  }
+
+  try {
+    new URL(trimmed);
+    return null;
+  } catch {
+    return "Enter a valid URL.";
+  }
+}
+
 /**
  * Validate deadline.
  * @returns Error message if invalid, null if valid
